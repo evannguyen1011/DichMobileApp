@@ -61,12 +61,15 @@ export function WelcomeScreen({
         keyboardShouldPersistTaps="handled"
       >
       <View style={styles.hero}>
-        <View style={[styles.logoCircle, { backgroundColor: theme.primarySoft }]}>
-          <SymbolView
-            name={{ ios: 'globe', android: 'language', web: 'language' }}
-            tintColor={theme.primary}
-            size={40}
-          />
+        <View style={styles.logoStack}>
+          <View style={[styles.logoHalo, { backgroundColor: theme.primarySoft }]} />
+          <View style={[styles.logoCircle, { backgroundColor: theme.primary }]}>
+            <SymbolView
+              name={{ ios: 'sparkles', android: 'auto_awesome', web: 'auto_awesome' }}
+              tintColor="#FFFFFF"
+              size={34}
+            />
+          </View>
         </View>
         <Text style={[styles.title, { color: theme.text }]}>{t('welcomeTitle')}</Text>
         <Text style={[styles.subtitle, { color: theme.textSecondary }]}>{t('welcomeSubtitle')}</Text>
@@ -133,13 +136,25 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingVertical: 16,
   },
-  logoCircle: {
-    width: 88,
-    height: 88,
-    borderRadius: 44,
+  logoStack: {
+    width: 108,
+    height: 108,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 4,
+  },
+  logoHalo: {
+    position: 'absolute',
+    width: 108,
+    height: 108,
+    borderRadius: 54,
+  },
+  logoCircle: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   title: {
     fontSize: 28,

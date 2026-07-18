@@ -94,14 +94,40 @@ export function HistoryDrawer({ visible, sessions, onClose, onDelete }: Props) {
         )}
 
         <ScrollView style={styles.body}>
-          {sessions.map((s) => (
-            <SessionCard
-              key={s.id}
-              session={toHistorySession(s, t('inProgress'), t('untitledSession'))}
-              onPress={() => setSelected(s)}
-              onDelete={() => onDelete(s.id)}
-            />
-          ))}
+          {(() => {
+            const now = new Date();
+            const yesterday = new Date(now);
+            yesterday.setDate(now.getDate() - 1);
+            const groups: { label: string; items: StoredSession[] }[] = [
+              { label: t('today'), items: sessions.filter((s) => isSameDay(new Date(s.startedAt), now)) },
+              {
+                label: t('yesterday'),
+                items: sessions.filter((s) => isSameDay(new Date(s.startedAt), yesterday)),
+              },
+              {
+                label: t('earlier'),
+                items: sessions.filter(
+                  (s) =>
+                    !isSameDay(new Date(s.startedAt), now) && !isSameDay(new Date(s.startedAt), yesterday)
+                ),
+              },
+            ];
+            return groups
+              .filter((g) => g.items.length > 0)
+              .map((g) => (
+                <View key={g.label} style={styles.group}>
+                  <Text style={[styles.groupLabel, { color: theme.textSecondary }]}>{g.label}</Text>
+                  {g.items.map((s) => (
+                    <SessionCard
+                      key={s.id}
+                      session={toHistorySession(s, t('inProgress'), t('untitledSession'))}
+                      onPress={() => setSelected(s)}
+                      onDelete={() => onDelete(s.id)}
+                    />
+                  ))}
+                </View>
+              ));
+          })()}
         </ScrollView>
       </Animated.View>
 
@@ -181,6 +207,16 @@ const styles = StyleSheet.create({
     fontSize: 13,
     textAlign: 'center',
     marginTop: 24,
+  },
+  group: {
+    marginBottom: 12,
+  },
+  groupLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 4,
   },
   detailScrim: {
     flex: 1,

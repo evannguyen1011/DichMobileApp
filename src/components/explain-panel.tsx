@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Animated, Dimensions, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SymbolView } from 'expo-symbols';
 
 import { useTheme } from '@/hooks/use-theme';
 import { useI18n } from '@/lib/i18n';
@@ -37,13 +38,20 @@ export function ExplainPanel({ visible, selectedText, explanation, loading, erro
         style={[styles.panel, { backgroundColor: theme.background, transform: [{ translateX }] }]}
       >
         <View style={[styles.header, { borderBottomColor: theme.border }]}>
-          <Text style={[styles.headerText, { color: theme.text }]}>{t('explainTitle')}</Text>
+          <View style={styles.headerTitleRow}>
+            <SymbolView
+              name={{ ios: 'sparkles', android: 'auto_awesome', web: 'auto_awesome' }}
+              tintColor={theme.primary}
+              size={17}
+            />
+            <Text style={[styles.headerText, { color: theme.text }]}>{t('explainTitle')}</Text>
+          </View>
           <TouchableOpacity onPress={onClose} hitSlop={10}>
             <Text style={[styles.closeText, { color: theme.primary }]}>{t('close')}</Text>
           </TouchableOpacity>
         </View>
         <ScrollView style={styles.body}>
-          <View style={[styles.quoteBox, { borderLeftColor: theme.primary }]}>
+          <View style={[styles.quoteBox, { backgroundColor: theme.card, borderColor: theme.border }]}>
             <Text style={[styles.quoteText, { color: theme.textSecondary }]}>"{selectedText}"</Text>
           </View>
           {loading && <ActivityIndicator color={theme.primary} style={{ marginTop: 16 }} />}
@@ -80,6 +88,11 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     borderBottomWidth: 1,
   },
+  headerTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
   headerText: {
     fontSize: 16,
     fontWeight: '600',
@@ -92,8 +105,9 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   quoteBox: {
-    borderLeftWidth: 3,
-    paddingLeft: 10,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 10,
     marginBottom: 16,
   },
   quoteText: {
