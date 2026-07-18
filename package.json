@@ -40,6 +40,7 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
+    "concurrently": "^10.0.3",
     "typescript": "~6.0.3"
   },
   "scripts": {
@@ -48,7 +49,9 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "server": "npm --prefix server start",
+    "dev:all": "concurrently -n metro,gemini-proxy -c blue,green \"npm:start -- --dev-client\" \"npm:server\""
   },
   "private": true
 }

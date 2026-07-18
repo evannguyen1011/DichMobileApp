@@ -1,16 +1,21 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import type { GeminiConfig } from '@/lib/gemini';
 
-const STORAGE_KEY = 'livetranslate.geminiApiKey';
+const STORAGE_KEY = 'livetranslate.geminiConfig';
 
-export async function getGeminiApiKey(): Promise<string | null> {
-  return AsyncStorage.getItem(STORAGE_KEY);
+export async function getGeminiConfig(): Promise<GeminiConfig | null> {
+  try {
+    const raw = await AsyncStorage.getItem(STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as GeminiConfig) : null;
+  } catch {
+    return null;
+  }
 }
 
-export async function setGeminiApiKey(key: string): Promise<void> {
-  const trimmed = key.trim();
-  if (trimmed) {
-    await AsyncStorage.setItem(STORAGE_KEY, trimmed);
-  } else {
+export async function setGeminiConfig(config: GeminiConfig | null): Promise<void> {
+  if (!config) {
     await AsyncStorage.removeItem(STORAGE_KEY);
+    return;
   }
+  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(config));
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Button, Modal, Platform, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Easing, useSharedValue, withTiming } from 'react-native-reanimated';
 import {
@@ -32,8 +32,9 @@ import {
   deleteSession,
   type StoredSession,
 } from '@/lib/history-storage';
-import { explainText, summarizeSession, MissingApiKeyError } from '@/lib/gemini';
-import { getGeminiApiKey, setGeminiApiKey } from '@/lib/api-key-storage';
+import { explainText, summarizeSession, MissingApiKeyError, type GeminiConfig } from '@/lib/gemini';
+import { getGeminiConfig, setGeminiConfig } from '@/lib/api-key-storage';
+import { getGeminiConsent, setGeminiConsent } from '@/lib/consent-storage';
 
 /**
  * Spike: validates the "stream raw EN text immediately, batch-translate to VI at a
@@ -89,11 +90,18 @@ export default function HomeScreen() {
   const [explainResult, setExplainResult] = useState<string | null>(null);
   const [explainLoading, setExplainLoading] = useState(false);
   const [explainError, setExplainError] = useState<string | null>(null);
-  // Each user's own Gemini key, entered in-app and stored only on their device (see
-  // api-key-storage.ts) - never baked into the app bundle.
-  const [geminiApiKey, setGeminiApiKeyState] = useState('');
-  const [apiKeyInput, setApiKeyInput] = useState('');
+  // Gemini can be reached either with the user's own key (stored only on their device) or
+  // via the small local/shared proxy server (see /server) that holds one key server-side.
+  // Either way requires explicit consent since the transcript/selection gets sent to Google.
+  const [geminiConfig, setGeminiConfigState] = useState<GeminiConfig | null>(null);
+  const [geminiConsent, setGeminiConsentState] = useState<boolean | null>(null);
   const [apiKeySettingsVisible, setApiKeySettingsVisible] = useState(false);
+  const [settingsMode, setSettingsMode] = useState<'own-key' | 'server'>('own-key');
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [serverUrlInput, setServerUrlInput] = useState('');
+  const [consentInput, setConsentInput] = useState(false);
+
+  const geminiReady = geminiConsent === true && geminiConfig !== null;
 
   const currentSessionIdRef = useRef<string | null>(null);
   const sessionStartedAtRef = useRef(0);
@@ -178,19 +186,38 @@ export default function HomeScreen() {
     }
   }, []);
 
-  // Load the user's own Gemini key from device storage once at startup.
+  // Load the Gemini config + consent decision from device storage once at startup.
   useEffect(() => {
-    getGeminiApiKey().then((key) => {
-      if (key) {
-        setGeminiApiKeyState(key);
-        setApiKeyInput(key);
+    getGeminiConfig().then((config) => {
+      if (config) {
+        setGeminiConfigState(config);
+        setSettingsMode(config.mode);
+        if (config.mode === 'own-key') setApiKeyInput(config.apiKey);
+        else setServerUrlInput(config.serverUrl);
       }
+    });
+    getGeminiConsent().then((consent) => {
+      setGeminiConsentState(consent);
+      setConsentInput(consent === true);
     });
   }, []);
 
-  const saveApiKeyInput = async () => {
-    await setGeminiApiKey(apiKeyInput);
-    setGeminiApiKeyState(apiKeyInput.trim());
+  const saveGeminiSettings = async () => {
+    await setGeminiConsent(consentInput);
+    setGeminiConsentState(consentInput);
+
+    if (!consentInput) {
+      // Declined - don't persist a config even if fields were filled in, keep it fully off.
+      setApiKeySettingsVisible(false);
+      return;
+    }
+
+    const config: GeminiConfig =
+      settingsMode === 'own-key'
+        ? { mode: 'own-key', apiKey: apiKeyInput.trim() }
+        : { mode: 'server', serverUrl: serverUrlInput.trim() };
+    await setGeminiConfig(config);
+    setGeminiConfigState(config);
     setApiKeySettingsVisible(false);
   };
 
@@ -213,8 +240,8 @@ export default function HomeScreen() {
     const sessionId = currentSessionIdRef.current;
     currentSessionIdRef.current = null;
     if (!sessionId || log.length === 0) return;
-    if (!geminiApiKey) {
-      console.log('[LiveTranslate] no Gemini API key set, skipping summary');
+    if (!geminiReady || !geminiConfig) {
+      console.log('[LiveTranslate] Gemini not configured/consented, skipping summary');
       await endSession(sessionId);
       return;
     }
@@ -222,7 +249,7 @@ export default function HomeScreen() {
       .map((e) => `${e.speaker} (${e.sourceLang}): ${e.source}\n-> (${e.targetLang}): ${e.translated}`)
       .join('\n\n');
     try {
-      const summary = await summarizeSession(geminiApiKey, transcript);
+      const summary = await summarizeSession(geminiConfig, transcript);
       await endSession(sessionId, summary);
     } catch (err: any) {
       console.log(`[LiveTranslate] summarizeSession failed: ${err?.message ?? err}`);
@@ -246,17 +273,21 @@ export default function HomeScreen() {
     setExplainResult(null);
     setExplainError(null);
     setExplainVisible(true);
-    if (!geminiApiKey) {
-      setExplainError('Chua co Gemini API key. Bam "API key" o thanh tren de nhap.');
+    if (!geminiReady || !geminiConfig) {
+      setExplainError(
+        geminiConsent === false
+          ? 'Ban chua dong y chia se du lieu voi Gemini. Bam "API key" o thanh tren neu muon doi y.'
+          : 'Chua thiet lap Gemini. Bam "API key" o thanh tren de dong y va cau hinh.'
+      );
       return;
     }
     setExplainLoading(true);
     try {
-      const result = await explainText(geminiApiKey, selectedText, contextText);
+      const result = await explainText(geminiConfig, selectedText, contextText);
       setExplainResult(result);
     } catch (err: any) {
       if (err instanceof MissingApiKeyError) {
-        setExplainError('Chua co Gemini API key. Bam "API key" o thanh tren de nhap.');
+        setExplainError('Chua thiet lap Gemini. Bam "API key" o thanh tren de cau hinh.');
       } else {
         setExplainError(err?.message ?? String(err));
       }
@@ -820,7 +851,7 @@ export default function HomeScreen() {
           <View style={styles.requestButtons}>
             <Button title="Lich su" onPress={openHistory} />
             <Button
-              title={geminiApiKey ? 'API key (da luu)' : 'API key'}
+              title={geminiReady ? 'API key (da bat)' : 'API key'}
               onPress={() => setApiKeySettingsVisible(true)}
             />
             <Button title={role === 'solo' ? 'Ket thuc' : 'Roi phong'} onPress={leaveSession} />
@@ -936,27 +967,72 @@ export default function HomeScreen() {
         onRequestClose={() => setApiKeySettingsVisible(false)}
       >
         <View style={styles.modalScrim}>
-          <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>Gemini API key</Text>
-            <Text style={styles.statusText}>
-              Lay mien phi tai aistudio.google.com/apikey. Key chi luu tren may nay, khong gui
-              di dau khac ngoai Google.
-            </Text>
-            <TextInput
-              style={styles.nameInput}
-              value={apiKeyInput}
-              onChangeText={setApiKeyInput}
-              placeholder="Dan API key vao day"
-              placeholderTextColor="#777777"
-              autoCapitalize="none"
-              autoCorrect={false}
-              secureTextEntry
-            />
+          <ScrollView style={styles.modalBox} contentContainerStyle={{ paddingBottom: 8 }}>
+            <Text style={styles.modalTitle}>Tinh nang Gemini (Giai thich / Tom tat)</Text>
+
+            <View style={styles.consentRow}>
+              <Switch value={consentInput} onValueChange={setConsentInput} />
+              <Text style={[styles.statusText, { flex: 1 }]}>
+                Toi dong y noi dung toi chon "Giai thich" va toan bo transcript khi "Ket thuc
+                phien" se duoc gui cho Google Gemini (ben thu ba) de xu ly. Neu khong dong y,
+                cac tinh nang nay se bi tat - phan nghe/dich van chay offline binh thuong.
+              </Text>
+            </View>
+
+            {consentInput && (
+              <>
+                <View style={styles.requestButtons}>
+                  <Button
+                    title={settingsMode === 'own-key' ? '[X] Key rieng' : 'Key rieng'}
+                    onPress={() => setSettingsMode('own-key')}
+                  />
+                  <Button
+                    title={settingsMode === 'server' ? '[X] Server chung' : 'Server chung'}
+                    onPress={() => setSettingsMode('server')}
+                  />
+                </View>
+
+                {settingsMode === 'own-key' ? (
+                  <>
+                    <Text style={styles.statusText}>
+                      Lay mien phi tai aistudio.google.com/apikey. Key chi luu tren may nay.
+                    </Text>
+                    <TextInput
+                      style={styles.nameInput}
+                      value={apiKeyInput}
+                      onChangeText={setApiKeyInput}
+                      placeholder="Dan API key vao day"
+                      placeholderTextColor="#777777"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      secureTextEntry
+                    />
+                  </>
+                ) : (
+                  <>
+                    <Text style={styles.statusText}>
+                      Dia chi server proxy (vi du http://192.168.6.133:4001). Server nay giu 1
+                      key Gemini dung chung - chay bang `npm run dev:all` trong luc dev.
+                    </Text>
+                    <TextInput
+                      style={styles.nameInput}
+                      value={serverUrlInput}
+                      onChangeText={setServerUrlInput}
+                      placeholder="http://192.168.x.x:4001"
+                      placeholderTextColor="#777777"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                  </>
+                )}
+              </>
+            )}
+
             <View style={styles.requestButtons}>
-              <Button title="Luu" onPress={saveApiKeyInput} />
+              <Button title="Luu" onPress={saveGeminiSettings} />
               <Button title="Dong" onPress={() => setApiKeySettingsVisible(false)} />
             </View>
-          </View>
+          </ScrollView>
         </View>
       </Modal>
     </SafeAreaView>
@@ -1076,6 +1152,7 @@ const styles = StyleSheet.create({
     padding: 24,
   },
   modalBox: {
+    maxHeight: '85%',
     backgroundColor: '#1A1A1A',
     borderRadius: 12,
     padding: 20,
@@ -1085,5 +1162,11 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     marginBottom: 8,
+  },
+  consentRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    marginBottom: 12,
   },
 });
