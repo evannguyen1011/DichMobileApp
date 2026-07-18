@@ -77,10 +77,6 @@ const dictionaries = {
     geminiSettingsTitle: 'Gemini feature (Explain / Summarize)',
     geminiConsentText:
       'I agree that text I select to "Explain", and the full transcript when I "Leave" a session, will be sent to Google Gemini (a third party) for processing. If I decline, these features are turned off - listening/translation keep working fully offline.',
-    ownKey: 'Own key',
-    sharedServer: 'Shared server',
-    ownKeyHint: 'Get one free at aistudio.google.com/apikey. The key is only stored on this device.',
-    apiKeyPlaceholder: 'Paste your API key here',
     serverUrlHint:
       'Proxy server address (e.g. http://192.168.1.5:4001). This server holds one shared Gemini key - run it with `npm run dev:all` during development.',
     serverUrlPlaceholder: 'http://192.168.x.x:4001',
@@ -173,12 +169,8 @@ const dictionaries = {
     geminiSettingsTitle: 'Tính năng Gemini (Giải thích / Tóm tắt)',
     geminiConsentText:
       'Tôi đồng ý nội dung tôi chọn "Giải thích", và toàn bộ transcript khi "Rời phòng", sẽ được gửi cho Google Gemini (bên thứ ba) để xử lý. Nếu không đồng ý, các tính năng này sẽ bị tắt - phần nghe/dịch vẫn chạy offline bình thường.',
-    ownKey: 'Key riêng',
-    sharedServer: 'Server chung',
-    ownKeyHint: 'Lấy miễn phí tại aistudio.google.com/apikey. Key chỉ lưu trên máy này.',
-    apiKeyPlaceholder: 'Dán API key vào đây',
     serverUrlHint:
-      'Địa chỉ server proxy (ví dụ http://192.168.1.5:4001). Server này giữ 1 key Gemini dùng chung - chạy bằng `npm run dev:all` trong lúc dev.',
+      'Địa chỉ server proxy (ví dụ http://192.168.1.5:4001). Server này giữ 1 key Gemini dùng chung cho mọi người - chạy bằng `npm run dev:all` trong lúc dev.',
     serverUrlPlaceholder: 'http://192.168.x.x:4001',
     save: 'Lưu',
     close: 'Đóng',

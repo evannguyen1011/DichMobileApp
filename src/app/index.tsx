@@ -94,14 +94,12 @@ export default function HomeScreen() {
   const [explainResult, setExplainResult] = useState<string | null>(null);
   const [explainLoading, setExplainLoading] = useState(false);
   const [explainError, setExplainError] = useState<string | null>(null);
-  // Gemini can be reached either with the user's own key (stored only on their device) or
-  // via the small local/shared proxy server (see /server) that holds one key server-side.
-  // Either way requires explicit consent since the transcript/selection gets sent to Google.
+  // Gemini is always reached via the small shared proxy server (see /server), which holds
+  // one Gemini key server-side - the app itself never handles a raw key. Requires explicit
+  // consent since the transcript/selection gets sent through it to Google.
   const [geminiConfig, setGeminiConfigState] = useState<GeminiConfig | null>(null);
   const [geminiConsent, setGeminiConsentState] = useState<boolean | null>(null);
   const [apiKeySettingsVisible, setApiKeySettingsVisible] = useState(false);
-  const [settingsMode, setSettingsMode] = useState<'own-key' | 'server'>('own-key');
-  const [apiKeyInput, setApiKeyInput] = useState('');
   const [serverUrlInput, setServerUrlInput] = useState('');
   const [consentInput, setConsentInput] = useState(false);
 
@@ -198,11 +196,9 @@ export default function HomeScreen() {
   // Load the Gemini config + consent decision from device storage once at startup.
   useEffect(() => {
     getGeminiConfig().then((config) => {
-      if (config) {
+      if (config?.mode === 'server') {
         setGeminiConfigState(config);
-        setSettingsMode(config.mode);
-        if (config.mode === 'own-key') setApiKeyInput(config.apiKey);
-        else setServerUrlInput(config.serverUrl);
+        setServerUrlInput(config.serverUrl);
       }
     });
     getGeminiConsent().then((consent) => {
@@ -216,15 +212,12 @@ export default function HomeScreen() {
     setGeminiConsentState(consentInput);
 
     if (!consentInput) {
-      // Declined - don't persist a config even if fields were filled in, keep it fully off.
+      // Declined - don't persist a config even if a URL was filled in, keep it fully off.
       setApiKeySettingsVisible(false);
       return;
     }
 
-    const config: GeminiConfig =
-      settingsMode === 'own-key'
-        ? { mode: 'own-key', apiKey: apiKeyInput.trim() }
-        : { mode: 'server', serverUrl: serverUrlInput.trim() };
+    const config: GeminiConfig = { mode: 'server', serverUrl: serverUrlInput.trim() };
     await setGeminiConfig(config);
     setGeminiConfigState(config);
     setApiKeySettingsVisible(false);
@@ -951,59 +944,22 @@ export default function HomeScreen() {
 
             {consentInput && (
               <>
-                <View style={{ flexDirection: 'row', gap: 8 }}>
-                  <SecondaryButton
-                    label={settingsMode === 'own-key' ? `✓ ${t('ownKey')}` : t('ownKey')}
-                    onPress={() => setSettingsMode('own-key')}
-                    style={{ flex: 1 }}
-                  />
-                  <SecondaryButton
-                    label={settingsMode === 'server' ? `✓ ${t('sharedServer')}` : t('sharedServer')}
-                    onPress={() => setSettingsMode('server')}
-                    style={{ flex: 1 }}
-                  />
-                </View>
-
-                {settingsMode === 'own-key' ? (
-                  <>
-                    <Text style={{ fontSize: 12.5, color: theme.textSecondary }}>{t('ownKeyHint')}</Text>
-                    <TextInput
-                      style={{
-                        borderWidth: 1,
-                        borderColor: theme.border,
-                        borderRadius: 12,
-                        padding: 12,
-                        color: theme.text,
-                      }}
-                      value={apiKeyInput}
-                      onChangeText={setApiKeyInput}
-                      placeholder={t('apiKeyPlaceholder')}
-                      placeholderTextColor={theme.textSecondary}
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                      secureTextEntry
-                    />
-                  </>
-                ) : (
-                  <>
-                    <Text style={{ fontSize: 12.5, color: theme.textSecondary }}>{t('serverUrlHint')}</Text>
-                    <TextInput
-                      style={{
-                        borderWidth: 1,
-                        borderColor: theme.border,
-                        borderRadius: 12,
-                        padding: 12,
-                        color: theme.text,
-                      }}
-                      value={serverUrlInput}
-                      onChangeText={setServerUrlInput}
-                      placeholder={t('serverUrlPlaceholder')}
-                      placeholderTextColor={theme.textSecondary}
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                    />
-                  </>
-                )}
+                <Text style={{ fontSize: 12.5, color: theme.textSecondary }}>{t('serverUrlHint')}</Text>
+                <TextInput
+                  style={{
+                    borderWidth: 1,
+                    borderColor: theme.border,
+                    borderRadius: 12,
+                    padding: 12,
+                    color: theme.text,
+                  }}
+                  value={serverUrlInput}
+                  onChangeText={setServerUrlInput}
+                  placeholder={t('serverUrlPlaceholder')}
+                  placeholderTextColor={theme.textSecondary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
               </>
             )}
 
