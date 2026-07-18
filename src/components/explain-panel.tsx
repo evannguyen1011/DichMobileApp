@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Animated, Dimensions, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
+import { useTheme } from '@/hooks/use-theme';
+import { useI18n } from '@/lib/i18n';
+
 type Props = {
   visible: boolean;
   selectedText: string;
@@ -15,6 +18,8 @@ const PANEL_WIDTH = Math.min(340, SCREEN_WIDTH * 0.85);
 
 /** Right-side slide-in panel (like GitHub Copilot Chat) showing a Gemini explanation. */
 export function ExplainPanel({ visible, selectedText, explanation, loading, error, onClose }: Props) {
+  const theme = useTheme();
+  const { t } = useI18n();
   const [translateX] = useState(() => new Animated.Value(PANEL_WIDTH));
 
   useEffect(() => {
@@ -28,20 +33,22 @@ export function ExplainPanel({ visible, selectedText, explanation, loading, erro
   return (
     <View style={StyleSheet.absoluteFill} pointerEvents={visible ? 'auto' : 'none'}>
       {visible && <TouchableOpacity style={styles.scrim} onPress={onClose} activeOpacity={1} />}
-      <Animated.View style={[styles.panel, { transform: [{ translateX }] }]}>
-        <View style={styles.header}>
-          <Text style={styles.headerText}>Giai thich (Gemini)</Text>
+      <Animated.View
+        style={[styles.panel, { backgroundColor: theme.background, transform: [{ translateX }] }]}
+      >
+        <View style={[styles.header, { borderBottomColor: theme.border }]}>
+          <Text style={[styles.headerText, { color: theme.text }]}>{t('explainTitle')}</Text>
           <TouchableOpacity onPress={onClose} hitSlop={10}>
-            <Text style={styles.closeText}>Dong</Text>
+            <Text style={[styles.closeText, { color: theme.primary }]}>{t('close')}</Text>
           </TouchableOpacity>
         </View>
         <ScrollView style={styles.body}>
-          <View style={styles.quoteBox}>
-            <Text style={styles.quoteText}>"{selectedText}"</Text>
+          <View style={[styles.quoteBox, { borderLeftColor: theme.primary }]}>
+            <Text style={[styles.quoteText, { color: theme.textSecondary }]}>"{selectedText}"</Text>
           </View>
-          {loading && <ActivityIndicator color="#5B9BD5" style={{ marginTop: 16 }} />}
-          {error && <Text style={styles.errorText}>{error}</Text>}
-          {explanation && <Text style={styles.explanationText}>{explanation}</Text>}
+          {loading && <ActivityIndicator color={theme.primary} style={{ marginTop: 16 }} />}
+          {error && <Text style={[styles.errorText, { color: theme.danger }]}>{error}</Text>}
+          {explanation && <Text style={[styles.explanationText, { color: theme.text }]}>{explanation}</Text>}
         </ScrollView>
       </Animated.View>
     </View>
@@ -63,7 +70,6 @@ const styles = StyleSheet.create({
     top: 0,
     bottom: 0,
     width: PANEL_WIDTH,
-    backgroundColor: '#1A1A1A',
     paddingTop: 48,
   },
   header: {
@@ -73,15 +79,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#333333',
   },
   headerText: {
-    color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',
   },
   closeText: {
-    color: '#5B9BD5',
     fontSize: 14,
   },
   body: {
@@ -90,19 +93,14 @@ const styles = StyleSheet.create({
   },
   quoteBox: {
     borderLeftWidth: 3,
-    borderLeftColor: '#5B9BD5',
     paddingLeft: 10,
     marginBottom: 16,
   },
   quoteText: {
-    color: '#BBBBBB',
     fontStyle: 'italic',
   },
-  errorText: {
-    color: '#E57373',
-  },
+  errorText: {},
   explanationText: {
-    color: '#FFFFFF',
     fontSize: 15,
     lineHeight: 22,
   },

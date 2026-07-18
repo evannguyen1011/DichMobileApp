@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button, Modal, Platform, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Modal, Platform, ScrollView, Switch, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Easing, useSharedValue, withTiming } from 'react-native-reanimated';
 import {
@@ -10,12 +10,19 @@ import { onTranslateTask } from 'expo-translate-text';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Network from 'expo-network';
 import * as Clipboard from 'expo-clipboard';
-import QRCode from 'react-native-qrcode-svg';
-import { SelectableTextView } from '@rob117/react-native-selectable-text';
-import { Waveform } from '@/components/waveform';
-import { SensitivitySlider } from '@/components/sensitivity-slider';
-import { HistoryDrawer } from '@/components/history-drawer';
+
+import { ControlBar } from '@/components/control-bar';
 import { ExplainPanel } from '@/components/explain-panel';
+import { SessionTopBar } from '@/components/session-top-bar';
+import { HostQrScreen } from '@/components/screens/host-qr-screen';
+import { JoinCodeScreen } from '@/components/screens/join-code-screen';
+import { JoinQrScreen } from '@/components/screens/join-qr-screen';
+import { SessionChatScreen } from '@/components/screens/session-chat-screen';
+import { SessionParticipantsScreen } from '@/components/screens/session-participants-screen';
+import { WelcomeScreen } from '@/components/screens/welcome-screen';
+import { GhostButton, PrimaryButton, SecondaryButton } from '@/components/ui/buttons';
+import { useTheme } from '@/hooks/use-theme';
+import { useI18n } from '@/lib/i18n';
 import {
   startHost,
   joinHost,
@@ -24,14 +31,7 @@ import {
   type CaptionMessage,
   type NetMessage,
 } from '@/lib/session-network';
-import {
-  createSessionId,
-  saveSessionEntries,
-  endSession,
-  listSessions,
-  deleteSession,
-  type StoredSession,
-} from '@/lib/history-storage';
+import { createSessionId, saveSessionEntries, endSession } from '@/lib/history-storage';
 import { explainText, summarizeSession, MissingApiKeyError, type GeminiConfig } from '@/lib/gemini';
 import { getGeminiConfig, setGeminiConfig } from '@/lib/api-key-storage';
 import { getGeminiConsent, setGeminiConsent } from '@/lib/consent-storage';
@@ -63,9 +63,13 @@ type LogEntry = {
 };
 
 type Role = 'solo' | 'host' | 'join';
-type SetupStep = 'select' | 'host-qr' | 'join-scan';
+type SetupStep = 'select' | 'host-qr' | 'join-scan' | 'join-code';
+type SessionTab = 'chat' | 'participants';
 
 export default function HomeScreen() {
+  const theme = useTheme();
+  const { t } = useI18n();
+
   // ---- Session setup (solo / host / join) ----------------------------------------------
   const [role, setRole] = useState<Role | null>(null);
   const [setupStep, setSetupStep] = useState<SetupStep>('select');
@@ -83,8 +87,8 @@ export default function HomeScreen() {
   const deviceIdRef = useRef(`dev-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
   // ---- History + explain (Gemini) ---------------------------------------------------------
-  const [historyVisible, setHistoryVisible] = useState(false);
-  const [sessions, setSessions] = useState<StoredSession[]>([]);
+  // Past sessions are persisted via history-storage.ts and read directly by src/app/history.tsx
+  // (a separate expo-router screen) - this screen only needs to write them as they happen.
   const [explainVisible, setExplainVisible] = useState(false);
   const [explainSelectedText, setExplainSelectedText] = useState('');
   const [explainResult, setExplainResult] = useState<string | null>(null);
@@ -107,7 +111,7 @@ export default function HomeScreen() {
 
   // ---- Main transcript state -------------------------------------------------------------
   const [isRunning, setIsRunning] = useState(false);
-  const [status, setStatus] = useState('Idle');
+  const [status, setStatus] = useState('');
   const [partialText, setPartialText] = useState('');
   const [draftTranslated, setDraftTranslated] = useState('');
   const [log, setLog] = useState<LogEntry[]>([]);
@@ -116,6 +120,11 @@ export default function HomeScreen() {
   // Higher = picks up quieter voices too (more noise gets through). Lower = requires louder,
   // more deliberate speech - turn this down in a noisy room and speak up.
   const [micSensitivity, setMicSensitivity] = useState(0.5);
+
+  // ---- Presentation-only UI state (no effect on the pipeline above) ----------------------
+  const [sessionTab, setSessionTab] = useState<SessionTab>('chat');
+  const [isMuted, setIsMuted] = useState(false);
+  const [speakerOn, setSpeakerOn] = useState(true);
 
   const isRunningRef = useRef(false);
   const useOnDeviceRef = useRef(true);
@@ -132,7 +141,6 @@ export default function HomeScreen() {
   const segmentPeakVolumeRef = useRef(0);
   const translateChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const logIdRef = useRef(0);
-  const scrollRef = useRef<ScrollView>(null);
   const volumeLevel = useSharedValue(0);
   // Some recognizer implementations never emit isFinal=true, even after stop() -
   // they just go straight to 'end'. Track the latest partial so 'end' can promote it.
@@ -165,8 +173,8 @@ export default function HomeScreen() {
           requireCharging: false,
         })
       )
-      .then(() => setStatus('San sang. Nhan Start de bat dau.'))
-      .catch((error: any) => setStatus(`Loi tai model dich: ${error?.message ?? error}`));
+      .then(() => setStatus(t('statusReady')))
+      .catch((error: any) => setStatus(t('statusLoadError', String(error?.message ?? error))));
 
     if (Platform.OS === 'android') {
       // Calling start({ requiresOnDeviceRecognition: true }) when the device truly has no
@@ -183,6 +191,7 @@ export default function HomeScreen() {
         });
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Load the Gemini config + consent decision from device storage once at startup.
@@ -264,16 +273,6 @@ export default function HomeScreen() {
     }
   };
 
-  const openHistory = async () => {
-    setSessions(await listSessions());
-    setHistoryVisible(true);
-  };
-
-  const handleDeleteSession = async (id: string) => {
-    await deleteSession(id);
-    setSessions((prev) => prev.filter((s) => s.id !== id));
-  };
-
   const handleExplain = async (selectedText: string, contextText: string) => {
     if (!selectedText.trim()) return;
     setExplainSelectedText(selectedText);
@@ -281,11 +280,7 @@ export default function HomeScreen() {
     setExplainError(null);
     setExplainVisible(true);
     if (!geminiReady || !geminiConfig) {
-      setExplainError(
-        geminiConsent === false
-          ? 'Ban chua dong y chia se du lieu voi Gemini. Bam "API key" o thanh tren neu muon doi y.'
-          : 'Chua thiet lap Gemini. Bam "API key" o thanh tren de dong y va cau hinh.'
-      );
+      setExplainError(geminiConsent === false ? t('consentDeclinedMessage') : t('notConfiguredMessage'));
       return;
     }
     setExplainLoading(true);
@@ -294,7 +289,7 @@ export default function HomeScreen() {
       setExplainResult(result);
     } catch (err: any) {
       if (err instanceof MissingApiKeyError) {
-        setExplainError('Chua thiet lap Gemini. Bam "API key" o thanh tren de cau hinh.');
+        setExplainError(t('notConfiguredMessage'));
       } else {
         setExplainError(err?.message ?? String(err));
       }
@@ -351,7 +346,7 @@ export default function HomeScreen() {
     const session = startHost(
       (msg) => handleIncomingMessage(msg),
       (count) => setPeerCount(count),
-      (error) => setJoinStatus(`Loi server: ${error.message}`)
+      (error) => setJoinStatus(t('statusDisconnected', error.message))
     );
     sessionRef.current = session;
     setMicApproved(true);
@@ -363,7 +358,7 @@ export default function HomeScreen() {
     if (!cameraPermission?.granted) {
       const result = await requestCameraPermission();
       if (!result.granted) {
-        setJoinStatus('Chua duoc cap quyen camera.');
+        setJoinStatus(t('statusCameraPermissionDenied'));
         return;
       }
     }
@@ -378,18 +373,18 @@ export default function HomeScreen() {
     try {
       parsed = JSON.parse(data);
     } catch {
-      setJoinStatus('Ma QR khong hop le.');
+      setJoinStatus(t('statusInvalidQr'));
       return;
     }
     scannedRef.current = true;
-    setJoinStatus(`Dang ket noi toi ${parsed.host}:${parsed.port}...`);
+    setJoinStatus(t('statusConnectingTo', parsed.host, parsed.port));
     const session = joinHost(parsed.host, parsed.port, {
       onConnected: () => {
         sessionRef.current = session;
         session.send({
           kind: 'hello',
           deviceId: deviceIdRef.current,
-          name: nameInput.trim() || 'Nguoi tham gia',
+          name: nameInput.trim() || t('you'),
         });
         setMicApproved(false);
         beginPersistedSession();
@@ -398,7 +393,7 @@ export default function HomeScreen() {
       onMessage: handleIncomingMessage,
       onDisconnect: (error) => {
         sessionRef.current = null;
-        setJoinStatus(error ? `Mat ket noi: ${error.message}` : 'Mat ket noi toi host.');
+        setJoinStatus(error ? t('statusDisconnected', error.message) : t('statusDisconnectedGeneric'));
         scannedRef.current = false;
       },
     });
@@ -421,6 +416,7 @@ export default function HomeScreen() {
     setLog([]);
     setPendingRequests([]);
     setMicApproved(true);
+    setSessionTab('chat');
   };
 
   const requestToSpeak = () => {
@@ -428,9 +424,9 @@ export default function HomeScreen() {
     (sessionRef.current as JoinSession).send({
       kind: 'request-speak',
       deviceId: deviceIdRef.current,
-      name: nameInput.trim() || 'Nguoi tham gia',
+      name: nameInput.trim() || t('you'),
     });
-    setJoinStatus('Da gui yeu cau, dang cho host duyet...');
+    setJoinStatus(t('statusRequestSent'));
   };
 
   const decideSpeakRequest = (deviceId: string, approved: boolean) => {
@@ -600,7 +596,7 @@ export default function HomeScreen() {
         setLog((prev) =>
           prev.map((e) =>
             e.id === entryId
-              ? { ...e, translated: `[loi dich: ${error?.message ?? error}]` }
+              ? { ...e, translated: `[${t('statusError', error?.code ?? '', String(error?.message ?? error))}]` }
               : e
           )
         );
@@ -627,17 +623,20 @@ export default function HomeScreen() {
     console.log(`[LiveTranslate] finalizeSegment: id=${id} text="${text}"`);
     const sourceLang = currentSourceLangRef.current;
     const targetLang: Lang = sourceLang === 'vi' ? 'en' : 'vi';
-    const speaker = nameInput.trim() || (role === 'host' ? 'Host' : 'Toi');
+    // 'Host' is a stable cross-device identifier (broadcast as the `speaker` field), not
+    // user-facing chrome - it must not be swapped per the local device's UI language, or
+    // the isPresenter check below would break for peers running a different UI language.
+    const speaker = nameInput.trim() || (role === 'host' ? 'Host' : t('you'));
     setLog((prev) => [
       ...prev,
-      { id, speaker, sourceLang, targetLang, source: text, translated: '...dang dich...' },
+      { id, speaker, sourceLang, targetLang, source: text, translated: '...' },
     ]);
     queueTranslate(id, text, sourceLang, targetLang, speaker);
   };
 
   useSpeechRecognitionEvent('start', () => {
     console.log('[LiveTranslate] event: start');
-    setStatus('Dang nghe...');
+    setStatus(t('statusListening'));
   });
 
   useSpeechRecognitionEvent('end', () => {
@@ -728,9 +727,11 @@ export default function HomeScreen() {
     const lang: Lang = event.detectedLanguage.toLowerCase().startsWith('vi') ? 'vi' : 'en';
     currentSourceLangRef.current = lang;
     setStatus(
-      `Dang nghe (${lang === 'vi' ? 'Tieng Viet' : 'English'}, ${Math.round(
-        event.confidence * 100
-      )}%)...`
+      t(
+        'statusListeningWithLang',
+        lang === 'vi' ? t('langVietnamese') : t('langEnglish'),
+        Math.round(event.confidence * 100)
+      )
     );
   });
 
@@ -742,10 +743,10 @@ export default function HomeScreen() {
       (event.error === 'language-not-supported' || event.error === 'service-not-allowed')
     ) {
       useOnDeviceRef.current = false;
-      setStatus('Khong co goi offline, chuyen sang online...');
+      setStatus(t('statusFallbackOnline'));
       return;
     }
-    setStatus(`Loi: ${event.error} - ${event.message}`);
+    setStatus(t('statusError', event.error, event.message ?? ''));
   });
 
   const onToggle = async () => {
@@ -754,7 +755,7 @@ export default function HomeScreen() {
       setIsRunning(false);
       clearSilenceTimer();
       ExpoSpeechRecognitionModule.stop();
-      setStatus('Da dung.');
+      setStatus(t('statusStopped'));
       setPartialText('');
       resetIncrementalTranslation();
       volumeLevel.value = withTiming(0, { duration: 300 });
@@ -763,7 +764,7 @@ export default function HomeScreen() {
 
     const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
     if (!perm.granted) {
-      setStatus('Chua duoc cap quyen microphone.');
+      setStatus(t('statusMicPermissionDenied'));
       return;
     }
 
@@ -777,187 +778,151 @@ export default function HomeScreen() {
   if (role === null) {
     if (setupStep === 'join-scan') {
       return (
-        <SafeAreaView style={styles.safeArea}>
-          <View style={styles.container}>
-            <Text style={styles.statusText}>Huong camera vao ma QR cua Host</Text>
-            <View style={styles.cameraBox}>
-              <CameraView
-                style={styles.camera}
-                facing="back"
-                barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-                onBarcodeScanned={(result) => onQrScanned(result.data)}
-              />
-            </View>
-            {joinStatus.length > 0 && <Text style={styles.statusText}>{joinStatus}</Text>}
-            <Button title="Quay lai" onPress={() => setSetupStep('select')} />
-          </View>
+        <SafeAreaView style={{ flex: 1, backgroundColor: theme.background }}>
+          <JoinQrScreen
+            onBack={() => setSetupStep('select')}
+            onScanned={onQrScanned}
+            statusMessage={joinStatus || undefined}
+          />
+        </SafeAreaView>
+      );
+    }
+
+    if (setupStep === 'join-code') {
+      return (
+        <SafeAreaView style={{ flex: 1, backgroundColor: theme.background }}>
+          <JoinCodeScreen onBack={() => setSetupStep('select')} onScanQrInstead={startJoinScan} />
         </SafeAreaView>
       );
     }
 
     if (setupStep === 'host-qr' && hostAddress) {
       return (
-        <SafeAreaView style={styles.safeArea}>
-          <View style={styles.container}>
-            <Text style={styles.statusText}>
-              Cho nguoi khac quet ma nay de tham gia ({peerCount} nguoi da vao)
-            </Text>
-            <View style={styles.qrBox}>
-              <QRCode
-                value={JSON.stringify({ host: hostAddress.host, port: hostAddress.port })}
-                size={220}
-              />
-            </View>
-            <Text style={styles.statusText}>
-              {hostAddress.host}:{hostAddress.port}
-            </Text>
-            <Button title="Bat dau" onPress={enterHostSession} />
-            <Button title="Huy" onPress={leaveSession} />
-          </View>
+        <SafeAreaView style={{ flex: 1, backgroundColor: theme.background }}>
+          <HostQrScreen
+            host={hostAddress.host}
+            port={hostAddress.port}
+            peerCount={peerCount}
+            onStart={enterHostSession}
+            onCancel={leaveSession}
+          />
         </SafeAreaView>
       );
     }
 
     return (
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.container}>
-          <Text style={styles.statusText}>Ten hien thi (tuy chon)</Text>
-          <TextInput
-            style={styles.nameInput}
-            value={nameInput}
-            onChangeText={setNameInput}
-            placeholder="Ten cua ban"
-            placeholderTextColor="#777777"
-          />
-          <View style={styles.setupButtonGroup}>
-            <Button title="Dung mot minh" onPress={enterSolo} />
-            <View style={styles.buttonSpacer} />
-            <Button title="Tao phong (Host)" onPress={startHostMode} />
-            <View style={styles.buttonSpacer} />
-            <Button title="Tham gia (Join)" onPress={startJoinScan} />
-          </View>
-          {joinStatus.length > 0 && <Text style={styles.statusText}>{joinStatus}</Text>}
-        </View>
+      <SafeAreaView style={{ flex: 1, backgroundColor: theme.background }}>
+        <WelcomeScreen
+          nameInput={nameInput}
+          onNameChange={setNameInput}
+          onJoinQr={startJoinScan}
+          onJoinCode={() => setSetupStep('join-code')}
+          onPresenter={startHostMode}
+          onSolo={enterSolo}
+          statusMessage={joinStatus || undefined}
+        />
       </SafeAreaView>
     );
   }
 
-  // ---- Render: main transcript UI (solo, or an active host/join session) ----------------
+  // ---- Render: main session UI (solo, or an active host/join session) -------------------
+
+  const selfName = nameInput.trim() || (role === 'host' ? 'Host' : t('you'));
+  const speakerLangByName = new Map<string, string>();
+  for (const entry of log) {
+    speakerLangByName.set(entry.speaker, entry.sourceLang.toUpperCase());
+  }
+  if (!speakerLangByName.has(selfName)) speakerLangByName.set(selfName, 'EN');
+  const participants = Array.from(speakerLangByName.entries()).map(([name, lang]) => ({
+    name,
+    isYou: name === selfName,
+    isPresenter: name === 'Host',
+    lang,
+  }));
+
+  const chatLog = log.map((entry) => ({
+    id: entry.id,
+    sourceLang: entry.sourceLang.toUpperCase(),
+    targetLang: entry.targetLang.toUpperCase(),
+    source: entry.source,
+    translated: entry.translated,
+  }));
+
+  const canControlSession = role !== 'join' || micApproved;
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.container}>
-        <View style={styles.sessionBar}>
-          <Text style={styles.sessionBarText}>
-            {role === 'host'
-              ? `Host - ${peerCount} nguoi da tham gia`
-              : role === 'join'
-                ? 'Da ket noi toi Host'
-                : 'Dang dung mot minh'}
-          </Text>
-          <View style={styles.requestButtons}>
-            <Button title="Lich su" onPress={openHistory} />
-            <Button
-              title={geminiReady ? 'API key (da bat)' : 'API key'}
-              onPress={() => setApiKeySettingsVisible(true)}
-            />
-            <Button title={role === 'solo' ? 'Ket thuc' : 'Roi phong'} onPress={leaveSession} />
-          </View>
-        </View>
-
-        {role === 'host' &&
-          pendingRequests.map((r) => (
-            <View key={r.deviceId} style={styles.requestRow}>
-              <Text style={styles.sessionBarText}>{r.name} muon phat bieu</Text>
-              <View style={styles.requestButtons}>
-                <Button title="Duyet" onPress={() => decideSpeakRequest(r.deviceId, true)} />
-                <View style={styles.buttonSpacer} />
-                <Button title="Tu choi" onPress={() => decideSpeakRequest(r.deviceId, false)} />
-              </View>
-            </View>
-          ))}
-
-        <Text style={styles.statusText}>{status}</Text>
-
-        {role === 'join' && !micApproved ? (
-          <View>
-            <Button title="Xin phat bieu" onPress={requestToSpeak} />
-            {joinStatus.length > 0 && <Text style={styles.statusText}>{joinStatus}</Text>}
-          </View>
-        ) : (
-          <Button
-            title={isRunning ? 'Stop' : 'Start listening'}
-            onPress={onToggle}
+    <SafeAreaView style={{ flex: 1, backgroundColor: theme.background }}>
+      <View
+        style={{
+          flex: 1,
+          padding: 16,
+          // The web-only floating pill tab bar (app-tabs.web.tsx) is absolutely positioned
+          // over the page content, so screens with no top bar of their own (e.g. the
+          // Participants tab in solo mode) need extra clearance on web or it overlaps
+          // and intercepts taps - same pattern src/app/explore.tsx used to use.
+          paddingTop: Platform.select({ web: 64, default: 16 }),
+          gap: 12,
+        }}
+      >
+        {role !== 'solo' && (
+          <SessionTopBar
+            sessionId={hostAddress ? String(hostAddress.port) : 'LAN'}
+            peopleCount={peerCount}
+            leaveLabel={t('leave')}
+            onLeave={leaveSession}
           />
         )}
 
-        <Waveform volume={volumeLevel} />
+        {sessionTab === 'chat' ? (
+          <SessionChatScreen
+            sessionTab={sessionTab}
+            onChangeSessionTab={setSessionTab}
+            log={chatLog}
+            partialText={partialText}
+            draftTranslated={draftTranslated}
+            status={status}
+            volumeLevel={volumeLevel}
+            micSensitivity={micSensitivity}
+            onMicSensitivityChange={setMicSensitivity}
+            onExplain={handleExplain}
+          />
+        ) : (
+          <SessionParticipantsScreen
+            sessionTab={sessionTab}
+            onChangeSessionTab={setSessionTab}
+            participants={participants}
+            isHost={role === 'host'}
+            pendingRequests={pendingRequests}
+            onApprove={(deviceId) => decideSpeakRequest(deviceId, true)}
+            onDecline={(deviceId) => decideSpeakRequest(deviceId, false)}
+          />
+        )}
 
-        <Text style={styles.statusText}>
-          Do nhay mic (loc tap am): {Math.round(micSensitivity * 100)}% - on qua thi keo thap
-          xuong va noi to len
-        </Text>
-        <SensitivitySlider value={micSensitivity} onValueChange={setMicSensitivity} />
-
-        <View style={styles.divider} />
-
-        <ScrollView
-          ref={scrollRef}
-          style={styles.scrollView}
-          onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
-        >
-          {log.map((entry) => (
-            <View key={entry.id} style={styles.logEntry}>
-              <Text style={styles.logSpeaker}>{entry.speaker}</Text>
-              <SelectableTextView
-                menuOptions={['Sao chep', 'Giai thich']}
-                onSelection={({ chosenOption, highlightedText }) => {
-                  if (!highlightedText?.trim()) return;
-                  if (chosenOption === 'Sao chep') {
-                    Clipboard.setStringAsync(highlightedText);
-                  } else if (chosenOption === 'Giai thich') {
-                    handleExplain(highlightedText, entry.source);
-                  }
-                }}
-              >
-                <Text style={styles.logSource}>
-                  {entry.sourceLang.toUpperCase()}: {entry.source}
-                </Text>
-              </SelectableTextView>
-              <SelectableTextView
-                menuOptions={['Sao chep', 'Giai thich']}
-                onSelection={({ chosenOption, highlightedText }) => {
-                  if (!highlightedText?.trim()) return;
-                  if (chosenOption === 'Sao chep') {
-                    Clipboard.setStringAsync(highlightedText);
-                  } else if (chosenOption === 'Giai thich') {
-                    handleExplain(highlightedText, entry.translated);
-                  }
-                }}
-              >
-                <Text style={styles.logTranslated}>
-                  {entry.targetLang.toUpperCase()}: {entry.translated}
-                </Text>
-              </SelectableTextView>
-            </View>
-          ))}
-          {partialText.length > 0 && (
-            <View style={styles.logEntry}>
-              <Text style={styles.partialText}>{partialText}</Text>
-              {draftTranslated.length > 0 && (
-                <Text style={styles.draftTranslated}>{draftTranslated}</Text>
-              )}
-            </View>
-          )}
-        </ScrollView>
+        {canControlSession ? (
+          <ControlBar
+            isRunning={isRunning}
+            isMuted={isMuted}
+            onToggleMute={() => setIsMuted((v) => !v)}
+            onToggleRunning={onToggle}
+            onToggleSpeaker={() => setSpeakerOn((v) => !v)}
+            speakerOn={speakerOn}
+            onTextSize={() => {}}
+            onMore={() => setApiKeySettingsVisible(true)}
+            muteLabel={isMuted ? t('unmute') : t('mute')}
+            speakerLabel={t('speaker')}
+            textSizeLabel={t('textSize')}
+            moreLabel={t('more')}
+          />
+        ) : (
+          <View style={{ alignItems: 'center', gap: 6 }}>
+            <GhostButton label={t('requestToSpeak')} onPress={requestToSpeak} />
+            {joinStatus.length > 0 && (
+              <Text style={{ fontSize: 12.5, color: theme.textSecondary }}>{joinStatus}</Text>
+            )}
+          </View>
+        )}
       </View>
 
-      <HistoryDrawer
-        visible={historyVisible}
-        sessions={sessions}
-        onClose={() => setHistoryVisible(false)}
-        onDelete={handleDeleteSession}
-      />
       <ExplainPanel
         visible={explainVisible}
         selectedText={explainSelectedText}
@@ -973,58 +938,71 @@ export default function HomeScreen() {
         animationType="fade"
         onRequestClose={() => setApiKeySettingsVisible(false)}
       >
-        <View style={styles.modalScrim}>
+        <View
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 24 }}
+        >
           {serverQrScanVisible ? (
-            <View style={styles.modalBox}>
-              <Text style={styles.modalTitle}>Quet QR tu terminal server</Text>
-              <View style={styles.cameraBox}>
+            <View
+              style={{ backgroundColor: theme.background, borderRadius: 16, padding: 20, gap: 12 }}
+            >
+              <Text style={{ fontSize: 17, fontWeight: '700', color: theme.text }}>
+                {t('scanQrServerTitle')}
+              </Text>
+              <View style={{ width: '100%', aspectRatio: 1, borderRadius: 12, overflow: 'hidden' }}>
                 <CameraView
-                  style={styles.camera}
+                  style={{ flex: 1 }}
                   facing="back"
                   barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
                   onBarcodeScanned={(result) => onServerQrScanned(result.data)}
                 />
               </View>
-              <Button title="Huy" onPress={() => setServerQrScanVisible(false)} />
+              <SecondaryButton label={t('cancel')} onPress={() => setServerQrScanVisible(false)} />
             </View>
           ) : (
-            <ScrollView style={styles.modalBox} contentContainerStyle={{ paddingBottom: 8 }}>
-              <Text style={styles.modalTitle}>Tinh nang Gemini (Giai thich / Tom tat)</Text>
+            <ScrollView
+              style={{ maxHeight: '85%', backgroundColor: theme.background, borderRadius: 16 }}
+              contentContainerStyle={{ padding: 20, paddingBottom: 12, gap: 12 }}
+            >
+              <Text style={{ fontSize: 17, fontWeight: '700', color: theme.text }}>
+                {t('geminiSettingsTitle')}
+              </Text>
 
-              <View style={styles.consentRow}>
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
                 <Switch value={consentInput} onValueChange={setConsentInput} />
-                <Text style={[styles.statusText, { flex: 1 }]}>
-                  Toi dong y noi dung toi chon "Giai thich" va toan bo transcript khi "Ket thuc
-                  phien" se duoc gui cho Google Gemini (ben thu ba) de xu ly. Neu khong dong y,
-                  cac tinh nang nay se bi tat - phan nghe/dich van chay offline binh thuong.
+                <Text style={{ flex: 1, fontSize: 13, lineHeight: 18, color: theme.textSecondary }}>
+                  {t('geminiConsentText')}
                 </Text>
               </View>
 
               {consentInput && (
                 <>
-                  <Text style={styles.statusText}>
-                    Dia chi server proxy - quet QR hien o terminal luc chay `npm run dev:all`,
-                    hoac nhap tay (vi du http://192.168.6.133:4001). Can cung mang WiFi voi may
-                    dang chay server.
-                  </Text>
-                  <View style={styles.requestButtons}>
-                    <Button title="Quet QR" onPress={startServerQrScan} />
-                  </View>
+                  <Text style={{ fontSize: 12.5, color: theme.textSecondary }}>{t('serverUrlHint')}</Text>
+                  <SecondaryButton label={t('scanQr')} onPress={startServerQrScan} />
                   <TextInput
-                    style={styles.nameInput}
+                    style={{
+                      borderWidth: 1,
+                      borderColor: theme.border,
+                      borderRadius: 12,
+                      padding: 12,
+                      color: theme.text,
+                    }}
                     value={serverUrlInput}
                     onChangeText={setServerUrlInput}
-                    placeholder="http://192.168.x.x:4001"
-                    placeholderTextColor="#777777"
+                    placeholder={t('serverUrlPlaceholder')}
+                    placeholderTextColor={theme.textSecondary}
                     autoCapitalize="none"
                     autoCorrect={false}
                   />
                 </>
               )}
 
-              <View style={styles.requestButtons}>
-                <Button title="Luu" onPress={saveGeminiSettings} />
-                <Button title="Dong" onPress={() => setApiKeySettingsVisible(false)} />
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <PrimaryButton label={t('save')} onPress={saveGeminiSettings} style={{ flex: 1 }} />
+                <SecondaryButton
+                  label={t('close')}
+                  onPress={() => setApiKeySettingsVisible(false)}
+                  style={{ flex: 1 }}
+                />
               </View>
             </ScrollView>
           )}
@@ -1033,135 +1011,3 @@ export default function HomeScreen() {
     </SafeAreaView>
   );
 }
-
-const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#121212',
-  },
-  container: {
-    flex: 1,
-    padding: 16,
-    backgroundColor: '#121212',
-  },
-  statusText: {
-    fontSize: 14,
-    color: '#AAAAAA',
-    marginBottom: 8,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: '#333333',
-    marginVertical: 12,
-  },
-  scrollView: {
-    flex: 1,
-  },
-  logEntry: {
-    marginBottom: 12,
-  },
-  logSpeaker: {
-    fontSize: 12,
-    color: '#888888',
-    marginBottom: 2,
-  },
-  logSource: {
-    fontSize: 16,
-    color: '#FFFFFF',
-  },
-  logTranslated: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1976D2',
-  },
-  partialText: {
-    fontSize: 16,
-    fontStyle: 'italic',
-    color: '#BBBBBB',
-  },
-  draftTranslated: {
-    fontSize: 16,
-    fontStyle: 'italic',
-    color: '#5B9BD5',
-  },
-  nameInput: {
-    borderWidth: 1,
-    borderColor: '#333333',
-    borderRadius: 8,
-    padding: 10,
-    color: '#FFFFFF',
-    marginBottom: 16,
-  },
-  setupButtonGroup: {
-    gap: 4,
-  },
-  buttonSpacer: {
-    height: 8,
-  },
-  cameraBox: {
-    width: '100%',
-    height: 320,
-    borderRadius: 12,
-    overflow: 'hidden',
-    marginVertical: 16,
-  },
-  camera: {
-    flex: 1,
-  },
-  qrBox: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FFFFFF',
-    padding: 16,
-    borderRadius: 12,
-    alignSelf: 'center',
-    marginVertical: 16,
-  },
-  sessionBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  sessionBarText: {
-    color: '#AAAAAA',
-    fontSize: 13,
-  },
-  requestRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#1E1E1E',
-    borderRadius: 8,
-    padding: 8,
-    marginBottom: 8,
-  },
-  requestButtons: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  modalScrim: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'center',
-    padding: 24,
-  },
-  modalBox: {
-    maxHeight: '85%',
-    backgroundColor: '#1A1A1A',
-    borderRadius: 12,
-    padding: 20,
-  },
-  modalTitle: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 8,
-  },
-  consentRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-    marginBottom: 12,
-  },
-});
