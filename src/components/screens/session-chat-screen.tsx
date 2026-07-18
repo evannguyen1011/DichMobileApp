@@ -28,6 +28,7 @@ type Props = {
   volumeLevel: SharedValue<number>;
   micSensitivity: number;
   onMicSensitivityChange: (value: number) => void;
+  onExplain?: (selectedText: string, contextText: string) => void;
 };
 
 export function SessionChatScreen({
@@ -40,6 +41,7 @@ export function SessionChatScreen({
   volumeLevel,
   micSensitivity,
   onMicSensitivityChange,
+  onExplain,
 }: Props) {
   const theme = useTheme();
   const { t } = useI18n();
@@ -72,7 +74,7 @@ export function SessionChatScreen({
         onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
       >
         {log.map((entry) => (
-          <ChatBubble key={entry.id} entry={entry} />
+          <ChatBubble key={entry.id} entry={entry} onExplain={onExplain} />
         ))}
         {partialText.length > 0 && (
           <View style={[styles.partialCard, { backgroundColor: theme.card, borderColor: theme.border }]}>

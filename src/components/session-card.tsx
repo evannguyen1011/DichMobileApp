@@ -12,11 +12,19 @@ export type HistorySession = {
   duration: string;
 };
 
-export function SessionCard({ session }: { session: HistorySession }) {
+export function SessionCard({
+  session,
+  onPress,
+  onDelete,
+}: {
+  session: HistorySession;
+  onPress?: () => void;
+  onDelete?: () => void;
+}) {
   const theme = useTheme();
 
   return (
-    <Pressable style={[styles.card, { borderColor: theme.border }]}>
+    <Pressable style={[styles.card, { borderColor: theme.border }]} onPress={onPress}>
       <View style={styles.left}>
         <Text style={[styles.title, { color: theme.text }]}>{session.title}</Text>
         <Text style={[styles.meta, { color: theme.textSecondary }]}>
@@ -34,6 +42,15 @@ export function SessionCard({ session }: { session: HistorySession }) {
         </View>
         <Text style={[styles.duration, { color: theme.textSecondary }]}>{session.duration}</Text>
       </View>
+      {onDelete ? (
+        <Pressable onPress={onDelete} hitSlop={10}>
+          <SymbolView
+            name={{ ios: 'trash', android: 'delete', web: 'delete' }}
+            tintColor={theme.danger}
+            size={16}
+          />
+        </Pressable>
+      ) : null}
       <SymbolView
         name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
         tintColor={theme.textSecondary}

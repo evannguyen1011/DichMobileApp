@@ -4,8 +4,11 @@
   "version": "1.0.0",
   "dependencies": {
     "@expo/ui": "~57.0.7",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@rob117/react-native-selectable-text": "^2.1.0",
     "expo": "~57.0.7",
     "expo-camera": "~57.0.3",
+    "expo-clipboard": "~57.0.1",
     "expo-constants": "~57.0.6",
     "expo-dev-client": "~57.0.7",
     "expo-device": "~57.0.1",
@@ -37,6 +40,7 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
+    "concurrently": "^10.0.3",
     "typescript": "~6.0.3"
   },
   "scripts": {
@@ -45,7 +49,9 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "server": "npm --prefix server start",
+    "dev:all": "concurrently -n metro,gemini-proxy -c blue,green \"npm:start -- --dev-client\" \"npm:server\""
   },
   "private": true
 }

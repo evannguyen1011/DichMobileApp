@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Platform, Text, View } from 'react-native';
+import { Modal, Platform, ScrollView, Switch, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Easing, useSharedValue, withTiming } from 'react-native-reanimated';
 import {
@@ -9,8 +9,10 @@ import {
 import { onTranslateTask } from 'expo-translate-text';
 import { useCameraPermissions } from 'expo-camera';
 import * as Network from 'expo-network';
+import * as Clipboard from 'expo-clipboard';
 
 import { ControlBar } from '@/components/control-bar';
+import { ExplainPanel } from '@/components/explain-panel';
 import { SessionTopBar } from '@/components/session-top-bar';
 import { HostQrScreen } from '@/components/screens/host-qr-screen';
 import { JoinCodeScreen } from '@/components/screens/join-code-screen';
@@ -18,7 +20,7 @@ import { JoinQrScreen } from '@/components/screens/join-qr-screen';
 import { SessionChatScreen } from '@/components/screens/session-chat-screen';
 import { SessionParticipantsScreen } from '@/components/screens/session-participants-screen';
 import { WelcomeScreen } from '@/components/screens/welcome-screen';
-import { GhostButton } from '@/components/ui/buttons';
+import { GhostButton, PrimaryButton, SecondaryButton } from '@/components/ui/buttons';
 import { useTheme } from '@/hooks/use-theme';
 import { useI18n } from '@/lib/i18n';
 import {
@@ -29,6 +31,10 @@ import {
   type CaptionMessage,
   type NetMessage,
 } from '@/lib/session-network';
+import { createSessionId, saveSessionEntries, endSession } from '@/lib/history-storage';
+import { explainText, summarizeSession, MissingApiKeyError, type GeminiConfig } from '@/lib/gemini';
+import { getGeminiConfig, setGeminiConfig } from '@/lib/api-key-storage';
+import { getGeminiConsent, setGeminiConsent } from '@/lib/consent-storage';
 
 /**
  * Spike: validates the "stream raw EN text immediately, batch-translate to VI at a
@@ -79,6 +85,30 @@ export default function HomeScreen() {
   const sessionRef = useRef<HostSession | JoinSession | null>(null);
   const scannedRef = useRef(false);
   const deviceIdRef = useRef(`dev-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+
+  // ---- History + explain (Gemini) ---------------------------------------------------------
+  // Past sessions are persisted via history-storage.ts and read directly by src/app/history.tsx
+  // (a separate expo-router screen) - this screen only needs to write them as they happen.
+  const [explainVisible, setExplainVisible] = useState(false);
+  const [explainSelectedText, setExplainSelectedText] = useState('');
+  const [explainResult, setExplainResult] = useState<string | null>(null);
+  const [explainLoading, setExplainLoading] = useState(false);
+  const [explainError, setExplainError] = useState<string | null>(null);
+  // Gemini can be reached either with the user's own key (stored only on their device) or
+  // via the small local/shared proxy server (see /server) that holds one key server-side.
+  // Either way requires explicit consent since the transcript/selection gets sent to Google.
+  const [geminiConfig, setGeminiConfigState] = useState<GeminiConfig | null>(null);
+  const [geminiConsent, setGeminiConsentState] = useState<boolean | null>(null);
+  const [apiKeySettingsVisible, setApiKeySettingsVisible] = useState(false);
+  const [settingsMode, setSettingsMode] = useState<'own-key' | 'server'>('own-key');
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [serverUrlInput, setServerUrlInput] = useState('');
+  const [consentInput, setConsentInput] = useState(false);
+
+  const geminiReady = geminiConsent === true && geminiConfig !== null;
+
+  const currentSessionIdRef = useRef<string | null>(null);
+  const sessionStartedAtRef = useRef(0);
 
   // ---- Main transcript state -------------------------------------------------------------
   const [isRunning, setIsRunning] = useState(false);
@@ -165,6 +195,102 @@ export default function HomeScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Load the Gemini config + consent decision from device storage once at startup.
+  useEffect(() => {
+    getGeminiConfig().then((config) => {
+      if (config) {
+        setGeminiConfigState(config);
+        setSettingsMode(config.mode);
+        if (config.mode === 'own-key') setApiKeyInput(config.apiKey);
+        else setServerUrlInput(config.serverUrl);
+      }
+    });
+    getGeminiConsent().then((consent) => {
+      setGeminiConsentState(consent);
+      setConsentInput(consent === true);
+    });
+  }, []);
+
+  const saveGeminiSettings = async () => {
+    await setGeminiConsent(consentInput);
+    setGeminiConsentState(consentInput);
+
+    if (!consentInput) {
+      // Declined - don't persist a config even if fields were filled in, keep it fully off.
+      setApiKeySettingsVisible(false);
+      return;
+    }
+
+    const config: GeminiConfig =
+      settingsMode === 'own-key'
+        ? { mode: 'own-key', apiKey: apiKeyInput.trim() }
+        : { mode: 'server', serverUrl: serverUrlInput.trim() };
+    await setGeminiConfig(config);
+    setGeminiConfigState(config);
+    setApiKeySettingsVisible(false);
+  };
+
+  // Persist every finalized entry (local or from the network) into the current session's
+  // history record, so it survives app restarts and shows up in the history drawer.
+  useEffect(() => {
+    if (!currentSessionIdRef.current || log.length === 0) return;
+    saveSessionEntries(currentSessionIdRef.current, sessionStartedAtRef.current, log);
+  }, [log]);
+
+  const beginPersistedSession = () => {
+    currentSessionIdRef.current = createSessionId();
+    sessionStartedAtRef.current = Date.now();
+  };
+
+  // Fire-and-forget: summarize the just-finished session via Gemini and mark it ended in
+  // storage. Runs after the UI has already moved on, so a slow/failed API call never blocks
+  // leaving the session.
+  const endPersistedSession = async () => {
+    const sessionId = currentSessionIdRef.current;
+    currentSessionIdRef.current = null;
+    if (!sessionId || log.length === 0) return;
+    if (!geminiReady || !geminiConfig) {
+      console.log('[LiveTranslate] Gemini not configured/consented, skipping summary');
+      await endSession(sessionId);
+      return;
+    }
+    const transcript = log
+      .map((e) => `${e.speaker} (${e.sourceLang}): ${e.source}\n-> (${e.targetLang}): ${e.translated}`)
+      .join('\n\n');
+    try {
+      const summary = await summarizeSession(geminiConfig, transcript);
+      await endSession(sessionId, summary);
+    } catch (err: any) {
+      console.log(`[LiveTranslate] summarizeSession failed: ${err?.message ?? err}`);
+      await endSession(sessionId);
+    }
+  };
+
+  const handleExplain = async (selectedText: string, contextText: string) => {
+    if (!selectedText.trim()) return;
+    setExplainSelectedText(selectedText);
+    setExplainResult(null);
+    setExplainError(null);
+    setExplainVisible(true);
+    if (!geminiReady || !geminiConfig) {
+      setExplainError(geminiConsent === false ? t('consentDeclinedMessage') : t('notConfiguredMessage'));
+      return;
+    }
+    setExplainLoading(true);
+    try {
+      const result = await explainText(geminiConfig, selectedText, contextText);
+      setExplainResult(result);
+    } catch (err: any) {
+      if (err instanceof MissingApiKeyError) {
+        setExplainError(t('notConfiguredMessage'));
+      } else {
+        setExplainError(err?.message ?? String(err));
+      }
+    } finally {
+      setExplainLoading(false);
+    }
+  };
+
   // ---- Session (host/join) wiring ---------------------------------------------------------
 
   const handleIncomingMessage = (msg: NetMessage) => {
@@ -204,6 +330,7 @@ export default function HomeScreen() {
 
   const enterSolo = () => {
     setMicApproved(true);
+    beginPersistedSession();
     setRole('solo');
   };
 
@@ -253,6 +380,7 @@ export default function HomeScreen() {
           name: nameInput.trim() || t('you'),
         });
         setMicApproved(false);
+        beginPersistedSession();
         setRole('join');
       },
       onMessage: handleIncomingMessage,
@@ -265,10 +393,12 @@ export default function HomeScreen() {
   };
 
   const enterHostSession = () => {
+    beginPersistedSession();
     setRole('host');
   };
 
   const leaveSession = () => {
+    void endPersistedSession();
     sessionRef.current?.close();
     sessionRef.current = null;
     setRole(null);
@@ -747,6 +877,7 @@ export default function HomeScreen() {
             volumeLevel={volumeLevel}
             micSensitivity={micSensitivity}
             onMicSensitivityChange={setMicSensitivity}
+            onExplain={handleExplain}
           />
         ) : (
           <SessionParticipantsScreen
@@ -769,7 +900,7 @@ export default function HomeScreen() {
             onToggleSpeaker={() => setSpeakerOn((v) => !v)}
             speakerOn={speakerOn}
             onTextSize={() => {}}
-            onMore={() => {}}
+            onMore={() => setApiKeySettingsVisible(true)}
             muteLabel={isMuted ? t('unmute') : t('mute')}
             speakerLabel={t('speaker')}
             textSizeLabel={t('textSize')}
@@ -784,6 +915,109 @@ export default function HomeScreen() {
           </View>
         )}
       </View>
+
+      <ExplainPanel
+        visible={explainVisible}
+        selectedText={explainSelectedText}
+        explanation={explainResult}
+        loading={explainLoading}
+        error={explainError}
+        onClose={() => setExplainVisible(false)}
+      />
+
+      <Modal
+        visible={apiKeySettingsVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setApiKeySettingsVisible(false)}
+      >
+        <View
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 24 }}
+        >
+          <ScrollView
+            style={{ maxHeight: '85%', backgroundColor: theme.background, borderRadius: 16 }}
+            contentContainerStyle={{ padding: 20, paddingBottom: 12, gap: 12 }}
+          >
+            <Text style={{ fontSize: 17, fontWeight: '700', color: theme.text }}>
+              {t('geminiSettingsTitle')}
+            </Text>
+
+            <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
+              <Switch value={consentInput} onValueChange={setConsentInput} />
+              <Text style={{ flex: 1, fontSize: 13, lineHeight: 18, color: theme.textSecondary }}>
+                {t('geminiConsentText')}
+              </Text>
+            </View>
+
+            {consentInput && (
+              <>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <SecondaryButton
+                    label={settingsMode === 'own-key' ? `✓ ${t('ownKey')}` : t('ownKey')}
+                    onPress={() => setSettingsMode('own-key')}
+                    style={{ flex: 1 }}
+                  />
+                  <SecondaryButton
+                    label={settingsMode === 'server' ? `✓ ${t('sharedServer')}` : t('sharedServer')}
+                    onPress={() => setSettingsMode('server')}
+                    style={{ flex: 1 }}
+                  />
+                </View>
+
+                {settingsMode === 'own-key' ? (
+                  <>
+                    <Text style={{ fontSize: 12.5, color: theme.textSecondary }}>{t('ownKeyHint')}</Text>
+                    <TextInput
+                      style={{
+                        borderWidth: 1,
+                        borderColor: theme.border,
+                        borderRadius: 12,
+                        padding: 12,
+                        color: theme.text,
+                      }}
+                      value={apiKeyInput}
+                      onChangeText={setApiKeyInput}
+                      placeholder={t('apiKeyPlaceholder')}
+                      placeholderTextColor={theme.textSecondary}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      secureTextEntry
+                    />
+                  </>
+                ) : (
+                  <>
+                    <Text style={{ fontSize: 12.5, color: theme.textSecondary }}>{t('serverUrlHint')}</Text>
+                    <TextInput
+                      style={{
+                        borderWidth: 1,
+                        borderColor: theme.border,
+                        borderRadius: 12,
+                        padding: 12,
+                        color: theme.text,
+                      }}
+                      value={serverUrlInput}
+                      onChangeText={setServerUrlInput}
+                      placeholder={t('serverUrlPlaceholder')}
+                      placeholderTextColor={theme.textSecondary}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                  </>
+                )}
+              </>
+            )}
+
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              <PrimaryButton label={t('save')} onPress={saveGeminiSettings} style={{ flex: 1 }} />
+              <SecondaryButton
+                label={t('close')}
+                onPress={() => setApiKeySettingsVisible(false)}
+                style={{ flex: 1 }}
+              />
+            </View>
+          </ScrollView>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }

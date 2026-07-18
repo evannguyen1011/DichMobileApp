@@ -1,10 +1,7 @@
-import * as Clipboard from 'expo-clipboard';
-import { SelectableTextView } from '@rob117/react-native-selectable-text';
 import { SymbolView } from 'expo-symbols';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { useTheme } from '@/hooks/use-theme';
-import { useI18n } from '@/lib/i18n';
 
 export type ChatBubbleEntry = {
   id: string;
@@ -15,20 +12,20 @@ export type ChatBubbleEntry = {
   time?: string;
 };
 
+// @rob117/react-native-selectable-text is a native-only Fabric component (no react-native-web
+// implementation - it throws "codegenNativeComponent is not a function" if imported at all on
+// web) so the "select text -> Copy/Explain" menu from chat-bubble.tsx is mobile-only. This web
+// variant keeps the same look with plain, natively-selectable text instead.
 function Line({
   langLabel,
   text,
   time,
   tinted,
-  menuOptions,
-  onSelection,
 }: {
   langLabel: string;
   text: string;
   time?: string;
   tinted: boolean;
-  menuOptions: string[];
-  onSelection: (chosenOption: string, highlightedText: string) => void;
 }) {
   const theme = useTheme();
   return (
@@ -45,15 +42,12 @@ function Line({
         {time ? <Text style={[styles.time, { color: theme.textSecondary }]}>{time}</Text> : null}
       </View>
       <View style={styles.lineBody}>
-        <SelectableTextView
-          menuOptions={menuOptions}
-          onSelection={({ chosenOption, highlightedText }) => {
-            if (highlightedText?.trim()) onSelection(chosenOption, highlightedText);
-          }}
-          style={styles.selectable}
+        <Text
+          selectable
+          style={[styles.text, { color: theme.text, fontWeight: tinted ? '600' : '400' }]}
         >
-          <Text style={[styles.text, { color: theme.text, fontWeight: tinted ? '600' : '400' }]}>{text}</Text>
-        </SelectableTextView>
+          {text}
+        </Text>
         <SymbolView
           name={{ ios: 'waveform', android: 'graphic_eq', web: 'graphic_eq' }}
           tintColor={theme.textSecondary}
@@ -66,40 +60,14 @@ function Line({
 
 type Props = {
   entry: ChatBubbleEntry;
-  /** Selecting text and choosing "Explain" from the native text-selection menu. */
   onExplain?: (selectedText: string, contextText: string) => void;
 };
 
-export function ChatBubble({ entry, onExplain }: Props) {
-  const { t } = useI18n();
-  const menuOptions = [t('copy'), t('explain')];
-
-  const handleSelection = (contextText: string) => (chosenOption: string, highlightedText: string) => {
-    if (chosenOption === t('copy')) {
-      Clipboard.setStringAsync(highlightedText);
-    } else if (chosenOption === t('explain')) {
-      onExplain?.(highlightedText, contextText);
-    }
-  };
-
+export function ChatBubble({ entry }: Props) {
   return (
     <View style={styles.pair}>
-      <Line
-        langLabel={entry.sourceLang}
-        text={entry.source}
-        time={entry.time}
-        tinted={false}
-        menuOptions={menuOptions}
-        onSelection={handleSelection(entry.source)}
-      />
-      <Line
-        langLabel={entry.targetLang}
-        text={entry.translated}
-        time={entry.time}
-        tinted
-        menuOptions={menuOptions}
-        onSelection={handleSelection(entry.translated)}
-      />
+      <Line langLabel={entry.sourceLang} text={entry.source} time={entry.time} tinted={false} />
+      <Line langLabel={entry.targetLang} text={entry.translated} time={entry.time} tinted />
     </View>
   );
 }
@@ -133,10 +101,8 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 8,
   },
-  selectable: {
-    flex: 1,
-  },
   text: {
+    flex: 1,
     fontSize: 15,
     lineHeight: 20,
   },
