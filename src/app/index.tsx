@@ -9,9 +9,13 @@ import {
 import { onTranslateTask } from 'expo-translate-text';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Network from 'expo-network';
+import * as Clipboard from 'expo-clipboard';
 import QRCode from 'react-native-qrcode-svg';
+import { SelectableTextView } from '@rob117/react-native-selectable-text';
 import { Waveform } from '@/components/waveform';
 import { SensitivitySlider } from '@/components/sensitivity-slider';
+import { HistoryDrawer } from '@/components/history-drawer';
+import { ExplainPanel } from '@/components/explain-panel';
 import {
   startHost,
   joinHost,
@@ -20,6 +24,15 @@ import {
   type CaptionMessage,
   type NetMessage,
 } from '@/lib/session-network';
+import {
+  createSessionId,
+  saveSessionEntries,
+  endSession,
+  listSessions,
+  deleteSession,
+  type StoredSession,
+} from '@/lib/history-storage';
+import { explainText, summarizeSession } from '@/lib/gemini';
 
 /**
  * Spike: validates the "stream raw EN text immediately, batch-translate to VI at a
@@ -66,6 +79,18 @@ export default function HomeScreen() {
   const sessionRef = useRef<HostSession | JoinSession | null>(null);
   const scannedRef = useRef(false);
   const deviceIdRef = useRef(`dev-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+
+  // ---- History + explain (Gemini) ---------------------------------------------------------
+  const [historyVisible, setHistoryVisible] = useState(false);
+  const [sessions, setSessions] = useState<StoredSession[]>([]);
+  const [explainVisible, setExplainVisible] = useState(false);
+  const [explainSelectedText, setExplainSelectedText] = useState('');
+  const [explainResult, setExplainResult] = useState<string | null>(null);
+  const [explainLoading, setExplainLoading] = useState(false);
+  const [explainError, setExplainError] = useState<string | null>(null);
+
+  const currentSessionIdRef = useRef<string | null>(null);
+  const sessionStartedAtRef = useRef(0);
 
   // ---- Main transcript state -------------------------------------------------------------
   const [isRunning, setIsRunning] = useState(false);
@@ -147,6 +172,64 @@ export default function HomeScreen() {
     }
   }, []);
 
+  // Persist every finalized entry (local or from the network) into the current session's
+  // history record, so it survives app restarts and shows up in the history drawer.
+  useEffect(() => {
+    if (!currentSessionIdRef.current || log.length === 0) return;
+    saveSessionEntries(currentSessionIdRef.current, sessionStartedAtRef.current, log);
+  }, [log]);
+
+  const beginPersistedSession = () => {
+    currentSessionIdRef.current = createSessionId();
+    sessionStartedAtRef.current = Date.now();
+  };
+
+  // Fire-and-forget: summarize the just-finished session via Gemini and mark it ended in
+  // storage. Runs after the UI has already moved on, so a slow/failed API call never blocks
+  // leaving the session.
+  const endPersistedSession = async () => {
+    const sessionId = currentSessionIdRef.current;
+    currentSessionIdRef.current = null;
+    if (!sessionId || log.length === 0) return;
+    const transcript = log
+      .map((e) => `${e.speaker} (${e.sourceLang}): ${e.source}\n-> (${e.targetLang}): ${e.translated}`)
+      .join('\n\n');
+    try {
+      const summary = await summarizeSession(transcript);
+      await endSession(sessionId, summary);
+    } catch (err: any) {
+      console.log(`[LiveTranslate] summarizeSession failed: ${err?.message ?? err}`);
+      await endSession(sessionId);
+    }
+  };
+
+  const openHistory = async () => {
+    setSessions(await listSessions());
+    setHistoryVisible(true);
+  };
+
+  const handleDeleteSession = async (id: string) => {
+    await deleteSession(id);
+    setSessions((prev) => prev.filter((s) => s.id !== id));
+  };
+
+  const handleExplain = async (selectedText: string, contextText: string) => {
+    if (!selectedText.trim()) return;
+    setExplainSelectedText(selectedText);
+    setExplainResult(null);
+    setExplainError(null);
+    setExplainLoading(true);
+    setExplainVisible(true);
+    try {
+      const result = await explainText(selectedText, contextText);
+      setExplainResult(result);
+    } catch (err: any) {
+      setExplainError(err?.message ?? String(err));
+    } finally {
+      setExplainLoading(false);
+    }
+  };
+
   // ---- Session (host/join) wiring ---------------------------------------------------------
 
   const handleIncomingMessage = (msg: NetMessage) => {
@@ -186,6 +269,7 @@ export default function HomeScreen() {
 
   const enterSolo = () => {
     setMicApproved(true);
+    beginPersistedSession();
     setRole('solo');
   };
 
@@ -235,6 +319,7 @@ export default function HomeScreen() {
           name: nameInput.trim() || 'Nguoi tham gia',
         });
         setMicApproved(false);
+        beginPersistedSession();
         setRole('join');
       },
       onMessage: handleIncomingMessage,
@@ -247,10 +332,12 @@ export default function HomeScreen() {
   };
 
   const enterHostSession = () => {
+    beginPersistedSession();
     setRole('host');
   };
 
   const leaveSession = () => {
+    void endPersistedSession();
     sessionRef.current?.close();
     sessionRef.current = null;
     setRole(null);
@@ -687,14 +774,19 @@ export default function HomeScreen() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
-        {role !== 'solo' && (
-          <View style={styles.sessionBar}>
-            <Text style={styles.sessionBarText}>
-              {role === 'host' ? `Host - ${peerCount} nguoi da tham gia` : 'Da ket noi toi Host'}
-            </Text>
-            <Button title="Roi phong" onPress={leaveSession} />
+        <View style={styles.sessionBar}>
+          <Text style={styles.sessionBarText}>
+            {role === 'host'
+              ? `Host - ${peerCount} nguoi da tham gia`
+              : role === 'join'
+                ? 'Da ket noi toi Host'
+                : 'Dang dung mot minh'}
+          </Text>
+          <View style={styles.requestButtons}>
+            <Button title="Lich su" onPress={openHistory} />
+            <Button title={role === 'solo' ? 'Ket thuc' : 'Roi phong'} onPress={leaveSession} />
           </View>
-        )}
+        </View>
 
         {role === 'host' &&
           pendingRequests.map((r) => (
@@ -740,12 +832,36 @@ export default function HomeScreen() {
           {log.map((entry) => (
             <View key={entry.id} style={styles.logEntry}>
               <Text style={styles.logSpeaker}>{entry.speaker}</Text>
-              <Text style={styles.logSource}>
-                {entry.sourceLang.toUpperCase()}: {entry.source}
-              </Text>
-              <Text style={styles.logTranslated}>
-                {entry.targetLang.toUpperCase()}: {entry.translated}
-              </Text>
+              <SelectableTextView
+                menuOptions={['Sao chep', 'Giai thich']}
+                onSelection={({ chosenOption, highlightedText }) => {
+                  if (!highlightedText?.trim()) return;
+                  if (chosenOption === 'Sao chep') {
+                    Clipboard.setStringAsync(highlightedText);
+                  } else if (chosenOption === 'Giai thich') {
+                    handleExplain(highlightedText, entry.source);
+                  }
+                }}
+              >
+                <Text style={styles.logSource}>
+                  {entry.sourceLang.toUpperCase()}: {entry.source}
+                </Text>
+              </SelectableTextView>
+              <SelectableTextView
+                menuOptions={['Sao chep', 'Giai thich']}
+                onSelection={({ chosenOption, highlightedText }) => {
+                  if (!highlightedText?.trim()) return;
+                  if (chosenOption === 'Sao chep') {
+                    Clipboard.setStringAsync(highlightedText);
+                  } else if (chosenOption === 'Giai thich') {
+                    handleExplain(highlightedText, entry.translated);
+                  }
+                }}
+              >
+                <Text style={styles.logTranslated}>
+                  {entry.targetLang.toUpperCase()}: {entry.translated}
+                </Text>
+              </SelectableTextView>
             </View>
           ))}
           {partialText.length > 0 && (
@@ -758,6 +874,21 @@ export default function HomeScreen() {
           )}
         </ScrollView>
       </View>
+
+      <HistoryDrawer
+        visible={historyVisible}
+        sessions={sessions}
+        onClose={() => setHistoryVisible(false)}
+        onDelete={handleDeleteSession}
+      />
+      <ExplainPanel
+        visible={explainVisible}
+        selectedText={explainSelectedText}
+        explanation={explainResult}
+        loading={explainLoading}
+        error={explainError}
+        onClose={() => setExplainVisible(false)}
+      />
     </SafeAreaView>
   );
 }
@@ -866,5 +997,6 @@ const styles = StyleSheet.create({
   },
   requestButtons: {
     flexDirection: 'row',
+    gap: 8,
   },
 });
