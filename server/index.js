@@ -1,6 +1,18 @@
 require('dotenv').config();
+const os = require('os');
 const express = require('express');
 const rateLimit = require('express-rate-limit');
+const qrcode = require('qrcode-terminal');
+
+function getLanIp() {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name] ?? []) {
+      if (iface.family === 'IPv4' && !iface.internal) return iface.address;
+    }
+  }
+  return '127.0.0.1';
+}
 
 const app = express();
 app.use(express.json({ limit: '100kb' }));
@@ -55,5 +67,8 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
 
 const PORT = process.env.PORT || 4001;
 app.listen(PORT, () => {
-  console.log(`[gemini-proxy] listening on http://0.0.0.0:${PORT}`);
+  const url = `http://${getLanIp()}:${PORT}`;
+  console.log(`[gemini-proxy] listening on ${url}`);
+  console.log('[gemini-proxy] scan this in the app\'s Gemini settings (same WiFi required):');
+  qrcode.generate(url, { small: true });
 });

@@ -78,8 +78,10 @@ const dictionaries = {
     geminiConsentText:
       'I agree that text I select to "Explain", and the full transcript when I "Leave" a session, will be sent to Google Gemini (a third party) for processing. If I decline, these features are turned off - listening/translation keep working fully offline.',
     serverUrlHint:
-      'Proxy server address (e.g. http://192.168.1.5:4001). This server holds one shared Gemini key - run it with `npm run dev:all` during development.',
+      'Proxy server address - scan the QR code shown in the terminal when running `npm run dev:all`, or type it manually (e.g. http://192.168.1.5:4001). Needs to be on the same Wi-Fi as the machine running the server.',
     serverUrlPlaceholder: 'http://192.168.x.x:4001',
+    scanQr: 'Scan QR',
+    scanQrServerTitle: 'Scan the QR code from the server terminal',
     save: 'Save',
     close: 'Close',
     apiKeyButton: 'API key',
@@ -170,8 +172,10 @@ const dictionaries = {
     geminiConsentText:
       'Tôi đồng ý nội dung tôi chọn "Giải thích", và toàn bộ transcript khi "Rời phòng", sẽ được gửi cho Google Gemini (bên thứ ba) để xử lý. Nếu không đồng ý, các tính năng này sẽ bị tắt - phần nghe/dịch vẫn chạy offline bình thường.',
     serverUrlHint:
-      'Địa chỉ server proxy (ví dụ http://192.168.1.5:4001). Server này giữ 1 key Gemini dùng chung cho mọi người - chạy bằng `npm run dev:all` trong lúc dev.',
+      'Địa chỉ server proxy - quét mã QR hiện ở terminal lúc chạy `npm run dev:all`, hoặc nhập tay (ví dụ http://192.168.1.5:4001). Cần cùng mạng WiFi với máy đang chạy server.',
     serverUrlPlaceholder: 'http://192.168.x.x:4001',
+    scanQr: 'Quét mã QR',
+    scanQrServerTitle: 'Quét mã QR từ terminal server',
     save: 'Lưu',
     close: 'Đóng',
     apiKeyButton: 'API key',

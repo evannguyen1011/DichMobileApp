@@ -7,7 +7,7 @@ import {
   useSpeechRecognitionEvent,
 } from 'expo-speech-recognition';
 import { onTranslateTask } from 'expo-translate-text';
-import { useCameraPermissions } from 'expo-camera';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Network from 'expo-network';
 import * as Clipboard from 'expo-clipboard';
 
@@ -102,6 +102,7 @@ export default function HomeScreen() {
   const [apiKeySettingsVisible, setApiKeySettingsVisible] = useState(false);
   const [serverUrlInput, setServerUrlInput] = useState('');
   const [consentInput, setConsentInput] = useState(false);
+  const [serverQrScanVisible, setServerQrScanVisible] = useState(false);
 
   const geminiReady = geminiConsent === true && geminiConfig !== null;
 
@@ -221,6 +222,19 @@ export default function HomeScreen() {
     await setGeminiConfig(config);
     setGeminiConfigState(config);
     setApiKeySettingsVisible(false);
+  };
+
+  const startServerQrScan = async () => {
+    if (!cameraPermission?.granted) {
+      const result = await requestCameraPermission();
+      if (!result.granted) return;
+    }
+    setServerQrScanVisible(true);
+  };
+
+  const onServerQrScanned = (data: string) => {
+    setServerUrlInput(data.trim());
+    setServerQrScanVisible(false);
   };
 
   // Persist every finalized entry (local or from the network) into the current session's
@@ -927,51 +941,71 @@ export default function HomeScreen() {
         <View
           style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 24 }}
         >
-          <ScrollView
-            style={{ maxHeight: '85%', backgroundColor: theme.background, borderRadius: 16 }}
-            contentContainerStyle={{ padding: 20, paddingBottom: 12, gap: 12 }}
-          >
-            <Text style={{ fontSize: 17, fontWeight: '700', color: theme.text }}>
-              {t('geminiSettingsTitle')}
-            </Text>
-
-            <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
-              <Switch value={consentInput} onValueChange={setConsentInput} />
-              <Text style={{ flex: 1, fontSize: 13, lineHeight: 18, color: theme.textSecondary }}>
-                {t('geminiConsentText')}
+          {serverQrScanVisible ? (
+            <View
+              style={{ backgroundColor: theme.background, borderRadius: 16, padding: 20, gap: 12 }}
+            >
+              <Text style={{ fontSize: 17, fontWeight: '700', color: theme.text }}>
+                {t('scanQrServerTitle')}
               </Text>
-            </View>
-
-            {consentInput && (
-              <>
-                <Text style={{ fontSize: 12.5, color: theme.textSecondary }}>{t('serverUrlHint')}</Text>
-                <TextInput
-                  style={{
-                    borderWidth: 1,
-                    borderColor: theme.border,
-                    borderRadius: 12,
-                    padding: 12,
-                    color: theme.text,
-                  }}
-                  value={serverUrlInput}
-                  onChangeText={setServerUrlInput}
-                  placeholder={t('serverUrlPlaceholder')}
-                  placeholderTextColor={theme.textSecondary}
-                  autoCapitalize="none"
-                  autoCorrect={false}
+              <View style={{ width: '100%', aspectRatio: 1, borderRadius: 12, overflow: 'hidden' }}>
+                <CameraView
+                  style={{ flex: 1 }}
+                  facing="back"
+                  barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+                  onBarcodeScanned={(result) => onServerQrScanned(result.data)}
                 />
-              </>
-            )}
-
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-              <PrimaryButton label={t('save')} onPress={saveGeminiSettings} style={{ flex: 1 }} />
-              <SecondaryButton
-                label={t('close')}
-                onPress={() => setApiKeySettingsVisible(false)}
-                style={{ flex: 1 }}
-              />
+              </View>
+              <SecondaryButton label={t('cancel')} onPress={() => setServerQrScanVisible(false)} />
             </View>
-          </ScrollView>
+          ) : (
+            <ScrollView
+              style={{ maxHeight: '85%', backgroundColor: theme.background, borderRadius: 16 }}
+              contentContainerStyle={{ padding: 20, paddingBottom: 12, gap: 12 }}
+            >
+              <Text style={{ fontSize: 17, fontWeight: '700', color: theme.text }}>
+                {t('geminiSettingsTitle')}
+              </Text>
+
+              <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
+                <Switch value={consentInput} onValueChange={setConsentInput} />
+                <Text style={{ flex: 1, fontSize: 13, lineHeight: 18, color: theme.textSecondary }}>
+                  {t('geminiConsentText')}
+                </Text>
+              </View>
+
+              {consentInput && (
+                <>
+                  <Text style={{ fontSize: 12.5, color: theme.textSecondary }}>{t('serverUrlHint')}</Text>
+                  <SecondaryButton label={t('scanQr')} onPress={startServerQrScan} />
+                  <TextInput
+                    style={{
+                      borderWidth: 1,
+                      borderColor: theme.border,
+                      borderRadius: 12,
+                      padding: 12,
+                      color: theme.text,
+                    }}
+                    value={serverUrlInput}
+                    onChangeText={setServerUrlInput}
+                    placeholder={t('serverUrlPlaceholder')}
+                    placeholderTextColor={theme.textSecondary}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                </>
+              )}
+
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <PrimaryButton label={t('save')} onPress={saveGeminiSettings} style={{ flex: 1 }} />
+                <SecondaryButton
+                  label={t('close')}
+                  onPress={() => setApiKeySettingsVisible(false)}
+                  style={{ flex: 1 }}
+                />
+              </View>
+            </ScrollView>
+          )}
         </View>
       </Modal>
     </SafeAreaView>
