@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button, Platform, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Button, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Easing, useSharedValue, withTiming } from 'react-native-reanimated';
 import {
@@ -32,7 +32,8 @@ import {
   deleteSession,
   type StoredSession,
 } from '@/lib/history-storage';
-import { explainText, summarizeSession } from '@/lib/gemini';
+import { explainText, summarizeSession, MissingApiKeyError } from '@/lib/gemini';
+import { getGeminiApiKey, setGeminiApiKey } from '@/lib/api-key-storage';
 
 /**
  * Spike: validates the "stream raw EN text immediately, batch-translate to VI at a
@@ -88,6 +89,11 @@ export default function HomeScreen() {
   const [explainResult, setExplainResult] = useState<string | null>(null);
   const [explainLoading, setExplainLoading] = useState(false);
   const [explainError, setExplainError] = useState<string | null>(null);
+  // Each user's own Gemini key, entered in-app and stored only on their device (see
+  // api-key-storage.ts) - never baked into the app bundle.
+  const [geminiApiKey, setGeminiApiKeyState] = useState('');
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [apiKeySettingsVisible, setApiKeySettingsVisible] = useState(false);
 
   const currentSessionIdRef = useRef<string | null>(null);
   const sessionStartedAtRef = useRef(0);
@@ -172,6 +178,22 @@ export default function HomeScreen() {
     }
   }, []);
 
+  // Load the user's own Gemini key from device storage once at startup.
+  useEffect(() => {
+    getGeminiApiKey().then((key) => {
+      if (key) {
+        setGeminiApiKeyState(key);
+        setApiKeyInput(key);
+      }
+    });
+  }, []);
+
+  const saveApiKeyInput = async () => {
+    await setGeminiApiKey(apiKeyInput);
+    setGeminiApiKeyState(apiKeyInput.trim());
+    setApiKeySettingsVisible(false);
+  };
+
   // Persist every finalized entry (local or from the network) into the current session's
   // history record, so it survives app restarts and shows up in the history drawer.
   useEffect(() => {
@@ -191,11 +213,16 @@ export default function HomeScreen() {
     const sessionId = currentSessionIdRef.current;
     currentSessionIdRef.current = null;
     if (!sessionId || log.length === 0) return;
+    if (!geminiApiKey) {
+      console.log('[LiveTranslate] no Gemini API key set, skipping summary');
+      await endSession(sessionId);
+      return;
+    }
     const transcript = log
       .map((e) => `${e.speaker} (${e.sourceLang}): ${e.source}\n-> (${e.targetLang}): ${e.translated}`)
       .join('\n\n');
     try {
-      const summary = await summarizeSession(transcript);
+      const summary = await summarizeSession(geminiApiKey, transcript);
       await endSession(sessionId, summary);
     } catch (err: any) {
       console.log(`[LiveTranslate] summarizeSession failed: ${err?.message ?? err}`);
@@ -218,13 +245,21 @@ export default function HomeScreen() {
     setExplainSelectedText(selectedText);
     setExplainResult(null);
     setExplainError(null);
-    setExplainLoading(true);
     setExplainVisible(true);
+    if (!geminiApiKey) {
+      setExplainError('Chua co Gemini API key. Bam "API key" o thanh tren de nhap.');
+      return;
+    }
+    setExplainLoading(true);
     try {
-      const result = await explainText(selectedText, contextText);
+      const result = await explainText(geminiApiKey, selectedText, contextText);
       setExplainResult(result);
     } catch (err: any) {
-      setExplainError(err?.message ?? String(err));
+      if (err instanceof MissingApiKeyError) {
+        setExplainError('Chua co Gemini API key. Bam "API key" o thanh tren de nhap.');
+      } else {
+        setExplainError(err?.message ?? String(err));
+      }
     } finally {
       setExplainLoading(false);
     }
@@ -784,6 +819,10 @@ export default function HomeScreen() {
           </Text>
           <View style={styles.requestButtons}>
             <Button title="Lich su" onPress={openHistory} />
+            <Button
+              title={geminiApiKey ? 'API key (da luu)' : 'API key'}
+              onPress={() => setApiKeySettingsVisible(true)}
+            />
             <Button title={role === 'solo' ? 'Ket thuc' : 'Roi phong'} onPress={leaveSession} />
           </View>
         </View>
@@ -889,6 +928,37 @@ export default function HomeScreen() {
         error={explainError}
         onClose={() => setExplainVisible(false)}
       />
+
+      <Modal
+        visible={apiKeySettingsVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setApiKeySettingsVisible(false)}
+      >
+        <View style={styles.modalScrim}>
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>Gemini API key</Text>
+            <Text style={styles.statusText}>
+              Lay mien phi tai aistudio.google.com/apikey. Key chi luu tren may nay, khong gui
+              di dau khac ngoai Google.
+            </Text>
+            <TextInput
+              style={styles.nameInput}
+              value={apiKeyInput}
+              onChangeText={setApiKeyInput}
+              placeholder="Dan API key vao day"
+              placeholderTextColor="#777777"
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry
+            />
+            <View style={styles.requestButtons}>
+              <Button title="Luu" onPress={saveApiKeyInput} />
+              <Button title="Dong" onPress={() => setApiKeySettingsVisible(false)} />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -998,5 +1068,22 @@ const styles = StyleSheet.create({
   requestButtons: {
     flexDirection: 'row',
     gap: 8,
+  },
+  modalScrim: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  modalBox: {
+    backgroundColor: '#1A1A1A',
+    borderRadius: 12,
+    padding: 20,
+  },
+  modalTitle: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 8,
   },
 });
