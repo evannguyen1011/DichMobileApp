@@ -25,7 +25,9 @@
       },
       "predictiveBackGestureEnabled": false,
       "permissions": [
-        "android.permission.RECORD_AUDIO"
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_WIFI_STATE",
+        "android.permission.ACCESS_NETWORK_STATE"
       ]
     },
     "web": {
@@ -42,7 +44,13 @@
           "imageWidth": 76
         }
       ],
-      "expo-speech-recognition"
+      "expo-speech-recognition",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Cho phep ung dung dung camera de quet ma QR tham gia phong."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

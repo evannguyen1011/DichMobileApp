@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Button, Platform, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Easing, useSharedValue, withTiming } from 'react-native-reanimated';
 import {
@@ -7,35 +7,77 @@ import {
   useSpeechRecognitionEvent,
 } from 'expo-speech-recognition';
 import { onTranslateTask } from 'expo-translate-text';
-import { Platform } from 'react-native';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Network from 'expo-network';
+import QRCode from 'react-native-qrcode-svg';
 import { Waveform } from '@/components/waveform';
+import { SensitivitySlider } from '@/components/sensitivity-slider';
+import {
+  startHost,
+  joinHost,
+  type HostSession,
+  type JoinSession,
+  type CaptionMessage,
+  type NetMessage,
+} from '@/lib/session-network';
 
 /**
  * Spike: validates the "stream raw EN text immediately, batch-translate to VI at a
  * sentence/word-count boundary" pipeline using stock APIs (SpeechRecognizer via
  * expo-speech-recognition + ML Kit Translate via expo-translate-text), before investing
- * in a custom sherpa-onnx + Qwen stack.
+ * in a custom sherpa-onnx + Qwen stack. Also supports a multi-device "workshop" session:
+ * one Host device runs a small TCP server on the LAN, Join devices connect to it, and
+ * every device's own locally-finalized captions get relayed to everyone else.
  */
 
-const WATCHDOG_WORD_THRESHOLD = 25;
-const WATCHDOG_TIMEOUT_MS = 9000;
 const RESTART_DELAY_AFTER_END_MS = 0;
+// How long volume has to stay below PAUSE_VOLUME_THRESHOLD before we treat it as "user
+// paused speaking" and cut the segment there. Fixed - not user-configurable, unrelated to
+// the mic sensitivity slider below.
+const SILENCE_CUT_DURATION_MS = 400;
+const PAUSE_VOLUME_THRESHOLD = 0.12;
 
 type Lang = 'en' | 'vi';
 type LogEntry = {
-  id: number;
+  id: string;
+  speaker: string;
   sourceLang: Lang;
   targetLang: Lang;
   source: string;
   translated: string;
 };
 
+type Role = 'solo' | 'host' | 'join';
+type SetupStep = 'select' | 'host-qr' | 'join-scan';
+
 export default function HomeScreen() {
+  // ---- Session setup (solo / host / join) ----------------------------------------------
+  const [role, setRole] = useState<Role | null>(null);
+  const [setupStep, setSetupStep] = useState<SetupStep>('select');
+  const [nameInput, setNameInput] = useState('');
+  const [peerCount, setPeerCount] = useState(0);
+  const [hostAddress, setHostAddress] = useState<{ host: string; port: number } | null>(null);
+  const [joinStatus, setJoinStatus] = useState('');
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  // Solo/Host can always speak; Join must request and wait for the Host to approve.
+  const [micApproved, setMicApproved] = useState(true);
+  const [pendingRequests, setPendingRequests] = useState<{ deviceId: string; name: string }[]>([]);
+
+  const sessionRef = useRef<HostSession | JoinSession | null>(null);
+  const scannedRef = useRef(false);
+  const deviceIdRef = useRef(`dev-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+
+  // ---- Main transcript state -------------------------------------------------------------
   const [isRunning, setIsRunning] = useState(false);
   const [status, setStatus] = useState('Idle');
   const [partialText, setPartialText] = useState('');
   const [draftTranslated, setDraftTranslated] = useState('');
   const [log, setLog] = useState<LogEntry[]>([]);
+  // 0..1 noise-gate sensitivity - NOT related to pause/cut detection. A segment's peak
+  // volume must clear (1 - micSensitivity) or it's discarded as background noise/cross-talk.
+  // Higher = picks up quieter voices too (more noise gets through). Lower = requires louder,
+  // more deliberate speech - turn this down in a noisy room and speak up.
+  const [micSensitivity, setMicSensitivity] = useState(0.5);
 
   const isRunningRef = useRef(false);
   const useOnDeviceRef = useRef(true);
@@ -43,8 +85,13 @@ export default function HomeScreen() {
   // event. Only actually switches mid-session on Android 14+ on-device recognition - see
   // startSegment() below.
   const currentSourceLangRef = useRef<Lang>('en');
-  const watchdogTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const watchdogTriggeredRef = useRef(false);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cutRequestedRef = useRef(false);
+  const micSensitivityRef = useRef(micSensitivity);
+  micSensitivityRef.current = micSensitivity;
+  // Tracks the loudest volume seen during the current in-progress utterance, to decide at
+  // finalize time whether it was the user talking or just background noise/cross-talk.
+  const segmentPeakVolumeRef = useRef(0);
   const translateChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const logIdRef = useRef(0);
   const scrollRef = useRef<ScrollView>(null);
@@ -84,6 +131,14 @@ export default function HomeScreen() {
       .catch((error: any) => setStatus(`Loi tai model dich: ${error?.message ?? error}`));
 
     if (Platform.OS === 'android') {
+      // Calling start({ requiresOnDeviceRecognition: true }) when the device truly has no
+      // on-device recognizer throws an uncaught native UnsupportedOperationException that
+      // crashes the whole app (not a catchable JS error event) - check support up front and
+      // never attempt the on-device path at all if it's not there.
+      const supportsOnDevice = ExpoSpeechRecognitionModule.supportsOnDeviceRecognition();
+      useOnDeviceRef.current = supportsOnDevice;
+      console.log(`[LiveTranslate] supportsOnDeviceRecognition() = ${supportsOnDevice}`);
+
       for (const locale of ['en-US', 'vi-VN']) {
         ExpoSpeechRecognitionModule.androidTriggerOfflineModelDownload({ locale }).catch(() => {
           // Best-effort only; start() will still fall back to the network recognizer.
@@ -92,43 +147,194 @@ export default function HomeScreen() {
     }
   }, []);
 
-  const clearWatchdog = () => {
-    if (watchdogTimerRef.current) {
-      clearTimeout(watchdogTimerRef.current);
-      watchdogTimerRef.current = null;
+  // ---- Session (host/join) wiring ---------------------------------------------------------
+
+  const handleIncomingMessage = (msg: NetMessage) => {
+    if (msg.kind === 'caption') {
+      console.log(`[LiveTranslate] handleIncomingMessage(caption): ${msg.speaker} - ${msg.source}`);
+      setLog((prev) => [
+        ...prev,
+        {
+          id: msg.id,
+          speaker: msg.speaker,
+          sourceLang: msg.sourceLang,
+          targetLang: msg.targetLang,
+          source: msg.source,
+          translated: msg.translated,
+        },
+      ]);
+      return;
+    }
+    if (msg.kind === 'request-speak') {
+      console.log(`[LiveTranslate] handleIncomingMessage(request-speak): ${msg.name}`);
+      setPendingRequests((prev) =>
+        prev.some((r) => r.deviceId === msg.deviceId)
+          ? prev
+          : [...prev, { deviceId: msg.deviceId, name: msg.name }]
+      );
+      return;
+    }
+    if (msg.kind === 'speak-decision') {
+      if (msg.deviceId === deviceIdRef.current) {
+        console.log(`[LiveTranslate] handleIncomingMessage(speak-decision): approved=${msg.approved}`);
+        setMicApproved(msg.approved);
+      }
+      return;
+    }
+    // 'hello' - only the host's network layer needs this (to map deviceId -> socket).
+  };
+
+  const enterSolo = () => {
+    setMicApproved(true);
+    setRole('solo');
+  };
+
+  const startHostMode = async () => {
+    const host = await Network.getIpAddressAsync().catch(() => '0.0.0.0');
+    const session = startHost(
+      (msg) => handleIncomingMessage(msg),
+      (count) => setPeerCount(count),
+      (error) => setJoinStatus(`Loi server: ${error.message}`)
+    );
+    sessionRef.current = session;
+    setMicApproved(true);
+    setHostAddress({ host, port: session.port });
+    setSetupStep('host-qr');
+  };
+
+  const startJoinScan = async () => {
+    if (!cameraPermission?.granted) {
+      const result = await requestCameraPermission();
+      if (!result.granted) {
+        setJoinStatus('Chua duoc cap quyen camera.');
+        return;
+      }
+    }
+    scannedRef.current = false;
+    setJoinStatus('');
+    setSetupStep('join-scan');
+  };
+
+  const onQrScanned = (data: string) => {
+    if (scannedRef.current) return;
+    let parsed: { host: string; port: number };
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      setJoinStatus('Ma QR khong hop le.');
+      return;
+    }
+    scannedRef.current = true;
+    setJoinStatus(`Dang ket noi toi ${parsed.host}:${parsed.port}...`);
+    const session = joinHost(parsed.host, parsed.port, {
+      onConnected: () => {
+        sessionRef.current = session;
+        session.send({
+          kind: 'hello',
+          deviceId: deviceIdRef.current,
+          name: nameInput.trim() || 'Nguoi tham gia',
+        });
+        setMicApproved(false);
+        setRole('join');
+      },
+      onMessage: handleIncomingMessage,
+      onDisconnect: (error) => {
+        sessionRef.current = null;
+        setJoinStatus(error ? `Mat ket noi: ${error.message}` : 'Mat ket noi toi host.');
+        scannedRef.current = false;
+      },
+    });
+  };
+
+  const enterHostSession = () => {
+    setRole('host');
+  };
+
+  const leaveSession = () => {
+    sessionRef.current?.close();
+    sessionRef.current = null;
+    setRole(null);
+    setSetupStep('select');
+    setPeerCount(0);
+    setHostAddress(null);
+    setJoinStatus('');
+    setLog([]);
+    setPendingRequests([]);
+    setMicApproved(true);
+  };
+
+  const requestToSpeak = () => {
+    if (!sessionRef.current || role !== 'join') return;
+    (sessionRef.current as JoinSession).send({
+      kind: 'request-speak',
+      deviceId: deviceIdRef.current,
+      name: nameInput.trim() || 'Nguoi tham gia',
+    });
+    setJoinStatus('Da gui yeu cau, dang cho host duyet...');
+  };
+
+  const decideSpeakRequest = (deviceId: string, approved: boolean) => {
+    if (!sessionRef.current || role !== 'host') return;
+    (sessionRef.current as HostSession).sendTo(deviceId, {
+      kind: 'speak-decision',
+      deviceId,
+      approved,
+    });
+    setPendingRequests((prev) => prev.filter((r) => r.deviceId !== deviceId));
+  };
+
+  const broadcastCaption = (entry: LogEntry) => {
+    console.log(
+      `[LiveTranslate] broadcastCaption called: role=${role} hasSession=${!!sessionRef.current} text="${entry.source}"`
+    );
+    if (!sessionRef.current || !role) return;
+    const msg: CaptionMessage = {
+      kind: 'caption',
+      id: entry.id,
+      speaker: entry.speaker,
+      sourceLang: entry.sourceLang,
+      targetLang: entry.targetLang,
+      source: entry.source,
+      translated: entry.translated,
+    };
+    if (role === 'host') {
+      (sessionRef.current as HostSession).broadcast(msg);
+    } else if (role === 'join') {
+      (sessionRef.current as JoinSession).send(msg);
+    }
+  };
+
+  // ---- Speech pipeline (unchanged from solo mode, just tags + broadcasts entries) --------
+
+  const clearSilenceTimer = () => {
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
     }
   };
 
   const forceCheckpoint = () => {
-    if (!isRunningRef.current || watchdogTriggeredRef.current) return;
+    if (!isRunningRef.current || cutRequestedRef.current) return;
     console.log('[LiveTranslate] forceCheckpoint -> stop()');
-    watchdogTriggeredRef.current = true;
+    cutRequestedRef.current = true;
     ExpoSpeechRecognitionModule.stop();
   };
 
-  const armWatchdog = () => {
-    clearWatchdog();
-    watchdogTriggeredRef.current = false;
-    watchdogTimerRef.current = setTimeout(() => {
-      console.log('[LiveTranslate] watchdog: timeout reached, forcing checkpoint');
-      forceCheckpoint();
-    }, WATCHDOG_TIMEOUT_MS);
-  };
-
   const startSegment = () => {
-    armWatchdog();
+    cutRequestedRef.current = false;
+    clearSilenceTimer();
     ExpoSpeechRecognitionModule.start({
       lang: 'en-US',
       interimResults: true,
       // Keeps the recognizer alive across natural pauses instead of stopping after every
       // isFinal result - avoids the stop()->start() dead zone that was dropping words right
-      // at the cut point. We still restart manually when our own watchdog forces a stop().
+      // at the cut point. We still restart manually when our own silence detection forces
+      // a stop() (see the 'volumechange' handler below).
       continuous: true,
       requiresOnDeviceRecognition: useOnDeviceRef.current,
       androidIntentOptions: {
-        // Silence thresholds - loose enough that a mid-sentence breath pause doesn't
-        // get mistaken for the end of a thought (these extras may be ignored entirely
-        // by the network recognizer; the JS watchdog above is the real backstop).
+        // Loose fallback thresholds for the recognizer's own (often-ignored) endpointing;
+        // our 'volumechange'-based silence detection below is the real cut mechanism now.
         EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS: 900,
         EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS: 700,
         // Auto-detect EN vs VI mid-session and switch the recognizer language.
@@ -198,10 +404,11 @@ export default function HomeScreen() {
   };
 
   const queueTranslate = (
-    entryId: number,
+    entryId: string,
     text: string,
     sourceLang: Lang,
-    targetLang: Lang
+    targetLang: Lang,
+    speaker: string
   ) => {
     console.log(`[LiveTranslate] queueTranslate: enqueue id=${entryId} ${sourceLang}->${targetLang}`);
     translateChainRef.current = translateChainRef.current
@@ -223,6 +430,10 @@ export default function HomeScreen() {
         setLog((prev) =>
           prev.map((e) => (e.id === entryId ? { ...e, translated } : e))
         );
+        // Built directly from values already in scope here, rather than pulled out of the
+        // setLog updater as a side effect - React doesn't guarantee that updater runs
+        // synchronously, so relying on it left broadcastCaption silently never firing.
+        broadcastCaption({ id: entryId, speaker, sourceLang, targetLang, source: text, translated });
       })
       .catch((error: any) => {
         console.log(`[LiveTranslate] translate FAILED id=${entryId}: ${error?.code ?? ''} ${error?.message ?? error}`);
@@ -239,19 +450,29 @@ export default function HomeScreen() {
   const finalizeSegment = (text: string) => {
     setPartialText('');
     resetIncrementalTranslation();
+    const peakVolume = segmentPeakVolumeRef.current;
+    segmentPeakVolumeRef.current = 0;
     if (!text.trim()) {
       console.log('[LiveTranslate] finalizeSegment: blank text, skipping');
       return;
     }
-    const id = ++logIdRef.current;
+    const noiseGateThreshold = 1 - micSensitivityRef.current;
+    if (peakVolume < noiseGateThreshold) {
+      console.log(
+        `[LiveTranslate] finalizeSegment: discarded as noise (peak=${peakVolume.toFixed(2)} < gate=${noiseGateThreshold.toFixed(2)}): "${text}"`
+      );
+      return;
+    }
+    const id = `me-${Date.now()}-${++logIdRef.current}`;
     console.log(`[LiveTranslate] finalizeSegment: id=${id} text="${text}"`);
     const sourceLang = currentSourceLangRef.current;
     const targetLang: Lang = sourceLang === 'vi' ? 'en' : 'vi';
+    const speaker = nameInput.trim() || (role === 'host' ? 'Host' : 'Toi');
     setLog((prev) => [
       ...prev,
-      { id, sourceLang, targetLang, source: text, translated: '...dang dich...' },
+      { id, speaker, sourceLang, targetLang, source: text, translated: '...dang dich...' },
     ]);
-    queueTranslate(id, text, sourceLang, targetLang);
+    queueTranslate(id, text, sourceLang, targetLang, speaker);
   };
 
   useSpeechRecognitionEvent('start', () => {
@@ -261,7 +482,7 @@ export default function HomeScreen() {
 
   useSpeechRecognitionEvent('end', () => {
     console.log('[LiveTranslate] event: end');
-    clearWatchdog();
+    clearSilenceTimer();
     volumeLevel.value = withTiming(0, { duration: 300 });
     if (lastPartialRef.current.trim()) {
       console.log(`[LiveTranslate] end: promoting last partial to final: "${lastPartialRef.current}"`);
@@ -278,6 +499,23 @@ export default function HomeScreen() {
       duration: 100,
       easing: Easing.out(Easing.ease),
     });
+
+    segmentPeakVolumeRef.current = Math.max(segmentPeakVolumeRef.current, normalized);
+
+    // Silence-based cut: once volume dips below a fixed threshold and stays there for
+    // SILENCE_CUT_DURATION_MS, treat it as the end of the thought and cut there. Any volume
+    // back above threshold cancels a pending cut. Uses a fixed threshold, not the mic
+    // sensitivity slider (that's a separate noise-gate concern - see finalizeSegment).
+    if (normalized < PAUSE_VOLUME_THRESHOLD) {
+      if (!silenceTimerRef.current) {
+        silenceTimerRef.current = setTimeout(() => {
+          console.log('[LiveTranslate] silence detected, forcing checkpoint');
+          forceCheckpoint();
+        }, SILENCE_CUT_DURATION_MS);
+      }
+    } else {
+      clearSilenceTimer();
+    }
   });
 
   useSpeechRecognitionEvent('result', (event) => {
@@ -321,12 +559,6 @@ export default function HomeScreen() {
       lastTentativeThrottleRef.current = now;
       translateDraftChunk(tentativeWords.join(' '), 'tentative');
     }
-
-    const wordCount = words.length;
-    if (wordCount >= WATCHDOG_WORD_THRESHOLD) {
-      console.log(`[LiveTranslate] watchdog: word count ${wordCount} >= threshold, forcing checkpoint`);
-      forceCheckpoint();
-    }
   });
 
   useSpeechRecognitionEvent('languagedetection', (event) => {
@@ -360,7 +592,7 @@ export default function HomeScreen() {
     if (isRunning) {
       isRunningRef.current = false;
       setIsRunning(false);
-      clearWatchdog();
+      clearSilenceTimer();
       ExpoSpeechRecognitionModule.stop();
       setStatus('Da dung.');
       setPartialText('');
@@ -380,17 +612,123 @@ export default function HomeScreen() {
     startSegment();
   };
 
+  // ---- Render: setup screens (mode not chosen yet) ---------------------------------------
+
+  if (role === null) {
+    if (setupStep === 'join-scan') {
+      return (
+        <SafeAreaView style={styles.safeArea}>
+          <View style={styles.container}>
+            <Text style={styles.statusText}>Huong camera vao ma QR cua Host</Text>
+            <View style={styles.cameraBox}>
+              <CameraView
+                style={styles.camera}
+                facing="back"
+                barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+                onBarcodeScanned={(result) => onQrScanned(result.data)}
+              />
+            </View>
+            {joinStatus.length > 0 && <Text style={styles.statusText}>{joinStatus}</Text>}
+            <Button title="Quay lai" onPress={() => setSetupStep('select')} />
+          </View>
+        </SafeAreaView>
+      );
+    }
+
+    if (setupStep === 'host-qr' && hostAddress) {
+      return (
+        <SafeAreaView style={styles.safeArea}>
+          <View style={styles.container}>
+            <Text style={styles.statusText}>
+              Cho nguoi khac quet ma nay de tham gia ({peerCount} nguoi da vao)
+            </Text>
+            <View style={styles.qrBox}>
+              <QRCode
+                value={JSON.stringify({ host: hostAddress.host, port: hostAddress.port })}
+                size={220}
+              />
+            </View>
+            <Text style={styles.statusText}>
+              {hostAddress.host}:{hostAddress.port}
+            </Text>
+            <Button title="Bat dau" onPress={enterHostSession} />
+            <Button title="Huy" onPress={leaveSession} />
+          </View>
+        </SafeAreaView>
+      );
+    }
+
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.container}>
+          <Text style={styles.statusText}>Ten hien thi (tuy chon)</Text>
+          <TextInput
+            style={styles.nameInput}
+            value={nameInput}
+            onChangeText={setNameInput}
+            placeholder="Ten cua ban"
+            placeholderTextColor="#777777"
+          />
+          <View style={styles.setupButtonGroup}>
+            <Button title="Dung mot minh" onPress={enterSolo} />
+            <View style={styles.buttonSpacer} />
+            <Button title="Tao phong (Host)" onPress={startHostMode} />
+            <View style={styles.buttonSpacer} />
+            <Button title="Tham gia (Join)" onPress={startJoinScan} />
+          </View>
+          {joinStatus.length > 0 && <Text style={styles.statusText}>{joinStatus}</Text>}
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // ---- Render: main transcript UI (solo, or an active host/join session) ----------------
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.container}>
+        {role !== 'solo' && (
+          <View style={styles.sessionBar}>
+            <Text style={styles.sessionBarText}>
+              {role === 'host' ? `Host - ${peerCount} nguoi da tham gia` : 'Da ket noi toi Host'}
+            </Text>
+            <Button title="Roi phong" onPress={leaveSession} />
+          </View>
+        )}
+
+        {role === 'host' &&
+          pendingRequests.map((r) => (
+            <View key={r.deviceId} style={styles.requestRow}>
+              <Text style={styles.sessionBarText}>{r.name} muon phat bieu</Text>
+              <View style={styles.requestButtons}>
+                <Button title="Duyet" onPress={() => decideSpeakRequest(r.deviceId, true)} />
+                <View style={styles.buttonSpacer} />
+                <Button title="Tu choi" onPress={() => decideSpeakRequest(r.deviceId, false)} />
+              </View>
+            </View>
+          ))}
+
         <Text style={styles.statusText}>{status}</Text>
 
-        <Button
-          title={isRunning ? 'Stop' : 'Start listening'}
-          onPress={onToggle}
-        />
+        {role === 'join' && !micApproved ? (
+          <View>
+            <Button title="Xin phat bieu" onPress={requestToSpeak} />
+            {joinStatus.length > 0 && <Text style={styles.statusText}>{joinStatus}</Text>}
+          </View>
+        ) : (
+          <Button
+            title={isRunning ? 'Stop' : 'Start listening'}
+            onPress={onToggle}
+          />
+        )}
 
         <Waveform volume={volumeLevel} />
+
+        <Text style={styles.statusText}>
+          Do nhay mic (loc tap am): {Math.round(micSensitivity * 100)}% - on qua thi keo thap
+          xuong va noi to len
+        </Text>
+        <SensitivitySlider value={micSensitivity} onValueChange={setMicSensitivity} />
 
         <View style={styles.divider} />
 
@@ -401,6 +739,7 @@ export default function HomeScreen() {
         >
           {log.map((entry) => (
             <View key={entry.id} style={styles.logEntry}>
+              <Text style={styles.logSpeaker}>{entry.speaker}</Text>
               <Text style={styles.logSource}>
                 {entry.sourceLang.toUpperCase()}: {entry.source}
               </Text>
@@ -449,6 +788,11 @@ const styles = StyleSheet.create({
   logEntry: {
     marginBottom: 12,
   },
+  logSpeaker: {
+    fontSize: 12,
+    color: '#888888',
+    marginBottom: 2,
+  },
   logSource: {
     fontSize: 16,
     color: '#FFFFFF',
@@ -467,5 +811,60 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontStyle: 'italic',
     color: '#5B9BD5',
+  },
+  nameInput: {
+    borderWidth: 1,
+    borderColor: '#333333',
+    borderRadius: 8,
+    padding: 10,
+    color: '#FFFFFF',
+    marginBottom: 16,
+  },
+  setupButtonGroup: {
+    gap: 4,
+  },
+  buttonSpacer: {
+    height: 8,
+  },
+  cameraBox: {
+    width: '100%',
+    height: 320,
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginVertical: 16,
+  },
+  camera: {
+    flex: 1,
+  },
+  qrBox: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+    padding: 16,
+    borderRadius: 12,
+    alignSelf: 'center',
+    marginVertical: 16,
+  },
+  sessionBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  sessionBarText: {
+    color: '#AAAAAA',
+    fontSize: 13,
+  },
+  requestRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#1E1E1E',
+    borderRadius: 8,
+    padding: 8,
+    marginBottom: 8,
+  },
+  requestButtons: {
+    flexDirection: 'row',
   },
 });
