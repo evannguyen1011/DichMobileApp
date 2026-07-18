@@ -98,6 +98,7 @@ export default function HomeScreen() {
   const [apiKeySettingsVisible, setApiKeySettingsVisible] = useState(false);
   const [serverUrlInput, setServerUrlInput] = useState('');
   const [consentInput, setConsentInput] = useState(false);
+  const [serverQrScanVisible, setServerQrScanVisible] = useState(false);
 
   const geminiReady = geminiConsent === true && geminiConfig !== null;
 
@@ -212,6 +213,19 @@ export default function HomeScreen() {
     await setGeminiConfig(config);
     setGeminiConfigState(config);
     setApiKeySettingsVisible(false);
+  };
+
+  const startServerQrScan = async () => {
+    if (!cameraPermission?.granted) {
+      const result = await requestCameraPermission();
+      if (!result.granted) return;
+    }
+    setServerQrScanVisible(true);
+  };
+
+  const onServerQrScanned = (data: string) => {
+    setServerUrlInput(data.trim());
+    setServerQrScanVisible(false);
   };
 
   // Persist every finalized entry (local or from the network) into the current session's
@@ -960,41 +974,60 @@ export default function HomeScreen() {
         onRequestClose={() => setApiKeySettingsVisible(false)}
       >
         <View style={styles.modalScrim}>
-          <ScrollView style={styles.modalBox} contentContainerStyle={{ paddingBottom: 8 }}>
-            <Text style={styles.modalTitle}>Tinh nang Gemini (Giai thich / Tom tat)</Text>
-
-            <View style={styles.consentRow}>
-              <Switch value={consentInput} onValueChange={setConsentInput} />
-              <Text style={[styles.statusText, { flex: 1 }]}>
-                Toi dong y noi dung toi chon "Giai thich" va toan bo transcript khi "Ket thuc
-                phien" se duoc gui cho Google Gemini (ben thu ba) de xu ly. Neu khong dong y,
-                cac tinh nang nay se bi tat - phan nghe/dich van chay offline binh thuong.
-              </Text>
-            </View>
-
-            {consentInput && (
-              <>
-                <Text style={styles.statusText}>
-                  Dia chi server proxy (vi du http://192.168.6.133:4001). Server nay giu 1 key
-                  Gemini dung chung cho moi nguoi - chay bang `npm run dev:all` trong luc dev.
-                </Text>
-                <TextInput
-                  style={styles.nameInput}
-                  value={serverUrlInput}
-                  onChangeText={setServerUrlInput}
-                  placeholder="http://192.168.x.x:4001"
-                  placeholderTextColor="#777777"
-                  autoCapitalize="none"
-                  autoCorrect={false}
+          {serverQrScanVisible ? (
+            <View style={styles.modalBox}>
+              <Text style={styles.modalTitle}>Quet QR tu terminal server</Text>
+              <View style={styles.cameraBox}>
+                <CameraView
+                  style={styles.camera}
+                  facing="back"
+                  barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+                  onBarcodeScanned={(result) => onServerQrScanned(result.data)}
                 />
-              </>
-            )}
-
-            <View style={styles.requestButtons}>
-              <Button title="Luu" onPress={saveGeminiSettings} />
-              <Button title="Dong" onPress={() => setApiKeySettingsVisible(false)} />
+              </View>
+              <Button title="Huy" onPress={() => setServerQrScanVisible(false)} />
             </View>
-          </ScrollView>
+          ) : (
+            <ScrollView style={styles.modalBox} contentContainerStyle={{ paddingBottom: 8 }}>
+              <Text style={styles.modalTitle}>Tinh nang Gemini (Giai thich / Tom tat)</Text>
+
+              <View style={styles.consentRow}>
+                <Switch value={consentInput} onValueChange={setConsentInput} />
+                <Text style={[styles.statusText, { flex: 1 }]}>
+                  Toi dong y noi dung toi chon "Giai thich" va toan bo transcript khi "Ket thuc
+                  phien" se duoc gui cho Google Gemini (ben thu ba) de xu ly. Neu khong dong y,
+                  cac tinh nang nay se bi tat - phan nghe/dich van chay offline binh thuong.
+                </Text>
+              </View>
+
+              {consentInput && (
+                <>
+                  <Text style={styles.statusText}>
+                    Dia chi server proxy - quet QR hien o terminal luc chay `npm run dev:all`,
+                    hoac nhap tay (vi du http://192.168.6.133:4001). Can cung mang WiFi voi may
+                    dang chay server.
+                  </Text>
+                  <View style={styles.requestButtons}>
+                    <Button title="Quet QR" onPress={startServerQrScan} />
+                  </View>
+                  <TextInput
+                    style={styles.nameInput}
+                    value={serverUrlInput}
+                    onChangeText={setServerUrlInput}
+                    placeholder="http://192.168.x.x:4001"
+                    placeholderTextColor="#777777"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                </>
+              )}
+
+              <View style={styles.requestButtons}>
+                <Button title="Luu" onPress={saveGeminiSettings} />
+                <Button title="Dong" onPress={() => setApiKeySettingsVisible(false)} />
+              </View>
+            </ScrollView>
+          )}
         </View>
       </Modal>
     </SafeAreaView>
