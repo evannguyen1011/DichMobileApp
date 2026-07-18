@@ -90,14 +90,12 @@ export default function HomeScreen() {
   const [explainResult, setExplainResult] = useState<string | null>(null);
   const [explainLoading, setExplainLoading] = useState(false);
   const [explainError, setExplainError] = useState<string | null>(null);
-  // Gemini can be reached either with the user's own key (stored only on their device) or
-  // via the small local/shared proxy server (see /server) that holds one key server-side.
-  // Either way requires explicit consent since the transcript/selection gets sent to Google.
+  // Gemini is always reached via the small shared proxy server (see /server), which holds
+  // one Gemini key server-side - the app itself never handles a raw key. Requires explicit
+  // consent since the transcript/selection gets sent through it to Google.
   const [geminiConfig, setGeminiConfigState] = useState<GeminiConfig | null>(null);
   const [geminiConsent, setGeminiConsentState] = useState<boolean | null>(null);
   const [apiKeySettingsVisible, setApiKeySettingsVisible] = useState(false);
-  const [settingsMode, setSettingsMode] = useState<'own-key' | 'server'>('own-key');
-  const [apiKeyInput, setApiKeyInput] = useState('');
   const [serverUrlInput, setServerUrlInput] = useState('');
   const [consentInput, setConsentInput] = useState(false);
 
@@ -189,11 +187,9 @@ export default function HomeScreen() {
   // Load the Gemini config + consent decision from device storage once at startup.
   useEffect(() => {
     getGeminiConfig().then((config) => {
-      if (config) {
+      if (config?.mode === 'server') {
         setGeminiConfigState(config);
-        setSettingsMode(config.mode);
-        if (config.mode === 'own-key') setApiKeyInput(config.apiKey);
-        else setServerUrlInput(config.serverUrl);
+        setServerUrlInput(config.serverUrl);
       }
     });
     getGeminiConsent().then((consent) => {
@@ -207,15 +203,12 @@ export default function HomeScreen() {
     setGeminiConsentState(consentInput);
 
     if (!consentInput) {
-      // Declined - don't persist a config even if fields were filled in, keep it fully off.
+      // Declined - don't persist a config even if a URL was filled in, keep it fully off.
       setApiKeySettingsVisible(false);
       return;
     }
 
-    const config: GeminiConfig =
-      settingsMode === 'own-key'
-        ? { mode: 'own-key', apiKey: apiKeyInput.trim() }
-        : { mode: 'server', serverUrl: serverUrlInput.trim() };
+    const config: GeminiConfig = { mode: 'server', serverUrl: serverUrlInput.trim() };
     await setGeminiConfig(config);
     setGeminiConfigState(config);
     setApiKeySettingsVisible(false);
@@ -981,50 +974,19 @@ export default function HomeScreen() {
 
             {consentInput && (
               <>
-                <View style={styles.requestButtons}>
-                  <Button
-                    title={settingsMode === 'own-key' ? '[X] Key rieng' : 'Key rieng'}
-                    onPress={() => setSettingsMode('own-key')}
-                  />
-                  <Button
-                    title={settingsMode === 'server' ? '[X] Server chung' : 'Server chung'}
-                    onPress={() => setSettingsMode('server')}
-                  />
-                </View>
-
-                {settingsMode === 'own-key' ? (
-                  <>
-                    <Text style={styles.statusText}>
-                      Lay mien phi tai aistudio.google.com/apikey. Key chi luu tren may nay.
-                    </Text>
-                    <TextInput
-                      style={styles.nameInput}
-                      value={apiKeyInput}
-                      onChangeText={setApiKeyInput}
-                      placeholder="Dan API key vao day"
-                      placeholderTextColor="#777777"
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                      secureTextEntry
-                    />
-                  </>
-                ) : (
-                  <>
-                    <Text style={styles.statusText}>
-                      Dia chi server proxy (vi du http://192.168.6.133:4001). Server nay giu 1
-                      key Gemini dung chung - chay bang `npm run dev:all` trong luc dev.
-                    </Text>
-                    <TextInput
-                      style={styles.nameInput}
-                      value={serverUrlInput}
-                      onChangeText={setServerUrlInput}
-                      placeholder="http://192.168.x.x:4001"
-                      placeholderTextColor="#777777"
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                    />
-                  </>
-                )}
+                <Text style={styles.statusText}>
+                  Dia chi server proxy (vi du http://192.168.6.133:4001). Server nay giu 1 key
+                  Gemini dung chung cho moi nguoi - chay bang `npm run dev:all` trong luc dev.
+                </Text>
+                <TextInput
+                  style={styles.nameInput}
+                  value={serverUrlInput}
+                  onChangeText={setServerUrlInput}
+                  placeholder="http://192.168.x.x:4001"
+                  placeholderTextColor="#777777"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
               </>
             )}
 
