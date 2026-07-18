@@ -8,13 +8,21 @@ type Props = {
   peopleCount: number;
   leaveLabel: string;
   onLeave: () => void;
+  onOpenHistory: () => void;
 };
 
-export function SessionTopBar({ sessionId, peopleCount, leaveLabel, onLeave }: Props) {
+export function SessionTopBar({ sessionId, peopleCount, leaveLabel, onLeave, onOpenHistory }: Props) {
   const theme = useTheme();
 
   return (
     <View style={[styles.bar, { backgroundColor: theme.primary }]}>
+      <Pressable onPress={onOpenHistory} hitSlop={10}>
+        <SymbolView
+          name={{ ios: 'clock', android: 'history', web: 'history' }}
+          tintColor="#FFFFFF"
+          size={18}
+        />
+      </Pressable>
       <Text style={styles.sessionId}>Session ID: {sessionId}</Text>
       <View style={styles.right}>
         <View style={styles.peopleChip}>

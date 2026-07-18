@@ -13,6 +13,7 @@ import * as Clipboard from 'expo-clipboard';
 
 import { ControlBar } from '@/components/control-bar';
 import { ExplainPanel } from '@/components/explain-panel';
+import { HistoryDrawer } from '@/components/history-drawer';
 import { SessionTopBar } from '@/components/session-top-bar';
 import { HostQrScreen } from '@/components/screens/host-qr-screen';
 import { JoinCodeScreen } from '@/components/screens/join-code-screen';
@@ -31,7 +32,14 @@ import {
   type CaptionMessage,
   type NetMessage,
 } from '@/lib/session-network';
-import { createSessionId, saveSessionEntries, endSession } from '@/lib/history-storage';
+import {
+  createSessionId,
+  saveSessionEntries,
+  endSession,
+  listSessions,
+  deleteSession,
+  type StoredSession,
+} from '@/lib/history-storage';
 import { explainText, summarizeSession, MissingApiKeyError, type GeminiConfig } from '@/lib/gemini';
 import { getGeminiConfig, setGeminiConfig } from '@/lib/api-key-storage';
 import { getGeminiConsent, setGeminiConsent } from '@/lib/consent-storage';
@@ -89,6 +97,8 @@ export default function HomeScreen() {
   // ---- History + explain (Gemini) ---------------------------------------------------------
   // Past sessions are persisted via history-storage.ts and read directly by src/app/history.tsx
   // (a separate expo-router screen) - this screen only needs to write them as they happen.
+  const [historyVisible, setHistoryVisible] = useState(false);
+  const [sessions, setSessions] = useState<StoredSession[]>([]);
   const [explainVisible, setExplainVisible] = useState(false);
   const [explainSelectedText, setExplainSelectedText] = useState('');
   const [explainResult, setExplainResult] = useState<string | null>(null);
@@ -271,6 +281,16 @@ export default function HomeScreen() {
       console.log(`[LiveTranslate] summarizeSession failed: ${err?.message ?? err}`);
       await endSession(sessionId);
     }
+  };
+
+  const openHistory = async () => {
+    setSessions(await listSessions());
+    setHistoryVisible(true);
+  };
+
+  const handleDeleteSession = async (id: string) => {
+    await deleteSession(id);
+    setSessions((prev) => prev.filter((s) => s.id !== id));
   };
 
   const handleExplain = async (selectedText: string, contextText: string) => {
@@ -811,17 +831,26 @@ export default function HomeScreen() {
     }
 
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: theme.background }}>
-        <WelcomeScreen
-          nameInput={nameInput}
-          onNameChange={setNameInput}
-          onJoinQr={startJoinScan}
-          onJoinCode={() => setSetupStep('join-code')}
-          onPresenter={startHostMode}
-          onSolo={enterSolo}
-          statusMessage={joinStatus || undefined}
+      <>
+        <SafeAreaView style={{ flex: 1, backgroundColor: theme.background }}>
+          <WelcomeScreen
+            nameInput={nameInput}
+            onNameChange={setNameInput}
+            onJoinQr={startJoinScan}
+            onJoinCode={() => setSetupStep('join-code')}
+            onPresenter={startHostMode}
+            onSolo={enterSolo}
+            onOpenHistory={openHistory}
+            statusMessage={joinStatus || undefined}
+          />
+        </SafeAreaView>
+        <HistoryDrawer
+          visible={historyVisible}
+          sessions={sessions}
+          onClose={() => setHistoryVisible(false)}
+          onDelete={handleDeleteSession}
         />
-      </SafeAreaView>
+      </>
     );
   }
 
@@ -846,6 +875,7 @@ export default function HomeScreen() {
     targetLang: entry.targetLang.toUpperCase(),
     source: entry.source,
     translated: entry.translated,
+    speaker: entry.speaker,
   }));
 
   const canControlSession = role !== 'join' || micApproved;
@@ -870,6 +900,7 @@ export default function HomeScreen() {
             peopleCount={peerCount}
             leaveLabel={t('leave')}
             onLeave={leaveSession}
+            onOpenHistory={openHistory}
           />
         )}
 
@@ -1008,6 +1039,13 @@ export default function HomeScreen() {
           )}
         </View>
       </Modal>
+
+      <HistoryDrawer
+        visible={historyVisible}
+        sessions={sessions}
+        onClose={() => setHistoryVisible(false)}
+        onDelete={handleDeleteSession}
+      />
     </SafeAreaView>
   );
 }

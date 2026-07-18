@@ -16,6 +16,7 @@ export type ChatLogEntry = {
   targetLang: string;
   source: string;
   translated: string;
+  speaker?: string;
 };
 
 type Props = {

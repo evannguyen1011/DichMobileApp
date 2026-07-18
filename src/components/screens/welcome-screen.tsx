@@ -13,6 +13,7 @@ type Props = {
   onJoinCode: () => void;
   onPresenter: () => void;
   onSolo: () => void;
+  onOpenHistory: () => void;
   statusMessage?: string;
 };
 
@@ -23,17 +24,42 @@ export function WelcomeScreen({
   onJoinCode,
   onPresenter,
   onSolo,
+  onOpenHistory,
   statusMessage,
 }: Props) {
   const theme = useTheme();
   const { t, lang, setLang } = useI18n();
 
   return (
-    <ScrollView
-      contentContainerStyle={styles.container}
-      style={{ backgroundColor: theme.background }}
-      keyboardShouldPersistTaps="handled"
-    >
+    <View style={{ flex: 1, backgroundColor: theme.background }}>
+      <Pressable
+        style={[styles.historyIcon, { backgroundColor: theme.card, borderColor: theme.border }]}
+        onPress={onOpenHistory}
+        hitSlop={8}
+      >
+        <SymbolView
+          name={{ ios: 'clock', android: 'history', web: 'history' }}
+          tintColor={theme.textSecondary}
+          size={18}
+        />
+      </Pressable>
+
+      <Pressable
+        style={[styles.languageIcon, { backgroundColor: theme.card, borderColor: theme.border }]}
+        onPress={() => setLang(lang === 'en' ? 'vi' : 'en')}
+        hitSlop={8}
+      >
+        <SymbolView
+          name={{ ios: 'globe', android: 'language', web: 'language' }}
+          tintColor={theme.textSecondary}
+          size={18}
+        />
+      </Pressable>
+
+      <ScrollView
+        contentContainerStyle={styles.container}
+        keyboardShouldPersistTaps="handled"
+      >
       <View style={styles.hero}>
         <View style={[styles.logoCircle, { backgroundColor: theme.primarySoft }]}>
           <SymbolView
@@ -91,27 +117,8 @@ export function WelcomeScreen({
       {statusMessage ? (
         <Text style={[styles.status, { color: theme.textSecondary }]}>{statusMessage}</Text>
       ) : null}
-
-      <Pressable
-        style={[styles.languageRow, { borderColor: theme.border }]}
-        onPress={() => setLang(lang === 'en' ? 'vi' : 'en')}
-      >
-        <SymbolView
-          name={{ ios: 'globe', android: 'language', web: 'language' }}
-          tintColor={theme.textSecondary}
-          size={18}
-        />
-        <Text style={[styles.languageLabel, { color: theme.text }]}>{t('language')}</Text>
-        <Text style={[styles.languageValue, { color: theme.textSecondary }]}>
-          {lang === 'en' ? 'English' : 'Tiếng Việt'}
-        </Text>
-        <SymbolView
-          name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
-          tintColor={theme.textSecondary}
-          size={16}
-        />
-      </Pressable>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
@@ -172,22 +179,28 @@ const styles = StyleSheet.create({
     fontSize: 13,
     textAlign: 'center',
   },
-  languageRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
+  languageIcon: {
+    position: 'absolute',
+    top: 12,
+    right: 16,
+    zIndex: 1,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    marginTop: 'auto',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  languageLabel: {
-    flex: 1,
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  languageValue: {
-    fontSize: 14,
+  historyIcon: {
+    position: 'absolute',
+    top: 12,
+    left: 16,
+    zIndex: 1,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });
